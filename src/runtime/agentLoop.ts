@@ -13,10 +13,21 @@ import { MarketHistory } from "../market/history";
 import { DEFAULT_KNOBS } from "../strategy/knobs";
 import { toNumberX18 } from "../preview/orderPreview";
 
+/** Emitted after each attempted (non-hold) action, for observability/attribution. */
+export interface TradeEvent {
+  intent: "open" | "close";
+  notionalUsd: number;
+  gasUsed?: bigint;
+  reverted: boolean;
+  skipped: boolean;
+}
+
 export interface RunAgentOpts {
   market: MarketDef;
   /** This agent's archetype parameters. */
   params: ArchetypeParams;
+  /** Human-readable label for logs (e.g. "mm-01"); falls back to the address. */
+  label?: string;
   /** Number of ticks to run; 0 = run until KILL_SWITCH. */
   iterations: number;
   /** Poisson action rate (events/hour). A function is re-read each tick so the
@@ -32,8 +43,8 @@ export interface RunAgentOpts {
   gate?: () => Promise<void>;
   /** External stop signal, checked each tick alongside KILL_SWITCH. */
   shouldStop?: () => boolean;
-  /** Called with the traded notional (USD) after each successfully sent tx. */
-  onTrade?: (notionalUsd: number) => void;
+  /** Called after each attempted (non-hold) action — sent, reverted, or skipped. */
+  onTrade?: (event: TradeEvent) => void;
 }
 
 /**
@@ -43,7 +54,11 @@ export interface RunAgentOpts {
  * killing the agent. Honours DRY_RUN (via executeWrite) and the KILL_SWITCH.
  */
 export async function runAgent(account: Account, strategy: Strategy, opts: RunAgentOpts): Promise<void> {
-  const log = logger.child({ agent: account.address, strategy: strategy.name, market: opts.market.name });
+  const log = logger.child({
+    agent: opts.label ?? account.address,
+    strategy: strategy.name,
+    market: opts.market.name,
+  });
   const minDelay = opts.minDelayMs ?? 0;
   const maxDelay = opts.maxDelayMs ?? 3_600_000;
   const knobs = opts.knobs ?? DEFAULT_KNOBS;
@@ -105,9 +120,16 @@ export async function runAgent(account: Account, strategy: Strategy, opts: RunAg
       if (!res.acted) {
         log.info({ tick, intent: res.intent, reason: res.reason }, "no-op");
       } else if (res.write.skipped) {
+        opts.onTrade?.({ intent: res.intent as "open" | "close", notionalUsd: res.notionalUsd, reverted: false, skipped: true });
         log.warn({ tick, intent: res.intent, reason: res.write.reason }, "skipped — gas");
       } else {
-        if (!res.write.reverted) opts.onTrade?.(res.notionalUsd);
+        opts.onTrade?.({
+          intent: res.intent as "open" | "close",
+          notionalUsd: res.notionalUsd,
+          gasUsed: res.write.gasUsed,
+          reverted: res.write.reverted,
+          skipped: false,
+        });
         log.info(
           {
             tick,

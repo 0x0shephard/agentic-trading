@@ -18,6 +18,9 @@ import { measureMetrics } from "../controller/metrics";
 import { getAnthropic } from "../llm/client";
 import { regimeState, regimeRateMultiplier } from "../llm/regime";
 import { runSupervisorOnce } from "../llm/supervisor";
+import { buildLabels } from "../observability/labels";
+import { Attribution } from "../observability/attribution";
+import { buildFleetReport, logFleetReport } from "../observability/report";
 
 export interface OrchestratorOpts {
   assignments: Assignment[];
@@ -37,6 +40,8 @@ export interface OrchestratorOpts {
   /** Run the LLM regime supervisor (defaults on when an API key is present). */
   supervisor?: boolean;
   supervisorIntervalMs?: number;
+  /** How often to log the fleet report heartbeat. Default 60s; 0 disables. */
+  reportIntervalMs?: number;
 }
 
 /** Effective action rate = base × rateMultiplier × regime × (relevant knob). */
@@ -78,6 +83,8 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
   const bucket = new TokenBucket(globalTps, Math.max(1, Math.ceil(globalTps)));
   const gate = () => bucket.acquire();
   const volume = new VolumeTracker(opts.volumeWindowMs ?? 3_600_000);
+  const labels = buildLabels(opts.assignments);
+  const attribution = new Attribution();
 
   let stopping = false;
   const shouldStop = () => stopping || env.KILL_SWITCH;
@@ -151,6 +158,28 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
     }, supMs);
   }
 
+  // Fleet report heartbeat — per-archetype attribution + exchange-wide vs target.
+  let reportTimer: ReturnType<typeof setInterval> | undefined;
+  const reportMs = opts.reportIntervalMs ?? 60_000;
+  if (reportMs > 0) {
+    const reportTick = async (): Promise<void> => {
+      try {
+        const report = await buildFleetReport(opts.assignments, {
+          attribution,
+          knobs,
+          controller: opts.controller,
+          volumeUsd: volume.volumeUsd(),
+        });
+        logFleetReport(report);
+      } catch (e) {
+        logger.error({ err: e instanceof Error ? e.message : String(e) }, "fleet report failed");
+      }
+    };
+    reportTimer = setInterval(() => {
+      if (!shouldStop()) void reportTick();
+    }, reportMs);
+  }
+
   logger.info(
     {
       agents: opts.assignments.length,
@@ -173,13 +202,17 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
     return runAgent(agentAccount(a.index), strategy, {
       market: a.market,
       params,
+      label: labels.get(a.index),
       iterations: 0,
       ratePerHour: () => effectiveRate(params, knobs, mult), // live: re-read each tick
       rng,
       knobs, // shared mutable ref — controller edits are visible to decide()
       gate,
       shouldStop,
-      onTrade: (n) => volume.record(n),
+      onTrade: (e) => {
+        if (!e.reverted && !e.skipped) volume.record(e.notionalUsd);
+        attribution.record(a.index, e);
+      },
       maxDelayMs: 60_000,
     }).catch((e: unknown) => {
       logger.error({ index: a.index, err: e instanceof Error ? e.message : String(e) }, "agent loop crashed");
@@ -192,6 +225,7 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
     clearInterval(refillTimer);
     if (controllerTimer) clearInterval(controllerTimer);
     if (supervisorTimer) clearInterval(supervisorTimer);
+    if (reportTimer) clearInterval(reportTimer);
     if (durTimer) clearTimeout(durTimer);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);

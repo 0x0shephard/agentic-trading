@@ -14,6 +14,7 @@ const count = Math.max(1, Number(process.argv[2] ?? DEFAULT_FLEET_SIZE));
 const durationSec = Math.max(0, Number(process.argv[3] ?? 0));
 const rateMultiplier = Math.max(0.01, Number(process.argv[4] ?? 1));
 const controllerSec = Math.max(1, Number(process.argv[5] ?? 30));
+const reportSec = Math.max(0, Number(process.argv[6] ?? 60));
 
 async function main(): Promise<void> {
   await assertChain();
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
     refillIntervalMs: 300_000,
     controller: DEFAULT_CONTROLLER,
     controllerIntervalMs: controllerSec * 1000,
+    reportIntervalMs: reportSec * 1000,
     volumeWindowMs: 3_600_000,
   });
 }

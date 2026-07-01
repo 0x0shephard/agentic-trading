@@ -90,6 +90,11 @@ agent/
 │   │   ├── regime.ts         # shared regime state (risk_on/neutral/risk_off) + multipliers
 │   │   └── supervisor.ts     # periodic Claude call that sets the regime
 │   │
+│   ├── observability/     # Reporting & attribution
+│   │   ├── labels.ts         # wallet index → readable label (mm-01, hft-02, …)
+│   │   ├── attribution.ts    # per-agent session stats (trades/volume/gas/reverts/skips)
+│   │   └── report.ts         # fleet report: per-agent + per-archetype + exchange vs target
+│   │
 │   ├── treasury/treasury.ts  # provision() (budget-aware funding) + treasuryStatus()
 │   ├── wallet/fleet.ts       # treasury() (index 0) + agentMembers(1..N)
 │   ├── logging/logger.ts     # pino logger
@@ -188,9 +193,16 @@ npm run provision [n]           # budget-aware, idempotent: fund ETH + mint/appr
 npm run agent <archetype> [idx] [ticks]   # run ONE agent a few ticks (validation)
   #  e.g. DRY_RUN=true npm run agent market-maker 1 3
   #       npm run agent probe 1 2          # probe = open↔close smoke test
-npm run swarm [count] [durSec] [rateMult] [ctrlSec]   # run the whole fleet
-  #  DRY_RUN=true npm run swarm 3 20 300 5   # 3 agents, 20s, 300× cadence, controller every 5s (dry validation)
+npm run swarm [count] [durSec] [rateMult] [ctrlSec] [reportSec]   # run the whole fleet
+  #  DRY_RUN=true npm run swarm 3 20 300 5 5  # 3 agents, 20s, 300× cadence, controller + report every 5s
   #  npm run swarm 3 0                        # 3 agents, run live until Ctrl-C
+```
+
+### Observability
+```bash
+npm run report [n]              # read-only fleet report: per-agent + per-archetype OI/PnL + exchange vs target ratio
+# A running `npm run swarm` also logs a "fleet report" heartbeat every 60s (arg 6 tunes the interval),
+# and per-agent logs use readable labels (mm-01, basis-01, …) instead of raw addresses.
 ```
 
 ### LLM layer (needs ANTHROPIC_API_KEY)

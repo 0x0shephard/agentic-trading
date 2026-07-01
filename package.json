@@ -19,6 +19,7 @@
     "agent": "tsx scripts/run-agent.ts",
     "swarm": "tsx scripts/run-swarm.ts",
     "supervisor": "tsx scripts/run-supervisor.ts",
+    "report": "tsx scripts/report.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
