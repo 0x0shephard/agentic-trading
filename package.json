@@ -18,10 +18,12 @@
     "treasury": "tsx scripts/treasury-status.ts",
     "agent": "tsx scripts/run-agent.ts",
     "swarm": "tsx scripts/run-swarm.ts",
+    "supervisor": "tsx scripts/run-supervisor.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.0",
     "dotenv": "^16.4.5",
     "pino": "^9.5.0",
     "viem": "^2.21.45",

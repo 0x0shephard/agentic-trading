@@ -6,9 +6,10 @@ import { momentumStrategy } from "./archetypes/momentum";
 import { marketMakerStrategy } from "./archetypes/marketMaker";
 import { hftTakerStrategy } from "./archetypes/hftTaker";
 import { degenStrategy } from "./archetypes/degen";
+import { macroStrategy } from "./archetypes/macro";
 
-/** Deterministic strategy per archetype. `macro` (#7) is LLM-driven (Phase 4). */
-export const STRATEGY_BY_ARCHETYPE: Partial<Record<ArchetypeId, Strategy>> = {
+/** Strategy per archetype. All 8 are wired; `macro` (#7) is LLM-backed. */
+export const STRATEGY_BY_ARCHETYPE: Record<ArchetypeId, Strategy> = {
   "hedger-short": hedgerStrategy,
   "hedger-long": hedgerStrategy, // same module; direction from params.sideBias
   "basis-arb": basisArbStrategy,
@@ -16,10 +17,9 @@ export const STRATEGY_BY_ARCHETYPE: Partial<Record<ArchetypeId, Strategy>> = {
   "market-maker": marketMakerStrategy,
   "hft-taker": hftTakerStrategy,
   degen: degenStrategy,
+  macro: macroStrategy,
 };
 
 export function strategyFor(id: ArchetypeId): Strategy {
-  const s = STRATEGY_BY_ARCHETYPE[id];
-  if (!s) throw new Error(`No deterministic strategy for archetype "${id}" (macro is LLM / Phase 4)`);
-  return s;
+  return STRATEGY_BY_ARCHETYPE[id];
 }

@@ -224,7 +224,7 @@ describe("degen (#8)", () => {
 });
 
 describe("registry", () => {
-  it("maps all deterministic archetypes", () => {
+  it("maps all 8 archetypes (incl. LLM macro)", () => {
     const ids: ArchetypeId[] = [
       "hedger-short",
       "hedger-long",
@@ -233,10 +233,8 @@ describe("registry", () => {
       "market-maker",
       "hft-taker",
       "degen",
+      "macro",
     ];
     for (const id of ids) expect(strategyFor(id)).toBeTruthy();
-  });
-  it("throws for macro (LLM / Phase 4)", () => {
-    expect(() => strategyFor("macro")).toThrow();
   });
 });

@@ -15,6 +15,9 @@ const schema = z.object({
   CHAIN_ID: z.coerce.number().int().default(CHAIN_ID),
   AGENT_MNEMONIC: z.string().trim().min(1).optional(),
   ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
+  // LLM used by the macro archetype (#7) + regime supervisor. Low-frequency, so
+  // cost is negligible; switch to claude-haiku-4-5 for the cheapest tier.
+  LLM_MODEL: z.string().trim().min(1).default("claude-opus-4-8"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   DRY_RUN: boolEnv("true"),
   KILL_SWITCH: boolEnv("false"),

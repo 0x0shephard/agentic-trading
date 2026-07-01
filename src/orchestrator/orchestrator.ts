@@ -15,6 +15,9 @@ import type { Assignment } from "./assignments";
 import type { ControllerConfig } from "../controller/controller";
 import { stepController } from "../controller/controller";
 import { measureMetrics } from "../controller/metrics";
+import { getAnthropic } from "../llm/client";
+import { regimeState, regimeRateMultiplier } from "../llm/regime";
+import { runSupervisorOnce } from "../llm/supervisor";
 
 export interface OrchestratorOpts {
   assignments: Assignment[];
@@ -31,11 +34,14 @@ export interface OrchestratorOpts {
   controller?: ControllerConfig;
   controllerIntervalMs?: number;
   volumeWindowMs?: number;
+  /** Run the LLM regime supervisor (defaults on when an API key is present). */
+  supervisor?: boolean;
+  supervisorIntervalMs?: number;
 }
 
-/** Effective action rate = base × (relevant knob) × rateMultiplier. */
+/** Effective action rate = base × rateMultiplier × regime × (relevant knob). */
 function effectiveRate(params: ArchetypeParams, knobs: Knobs, mult: number): number {
-  const base = params.baseRatePerHour * mult;
+  const base = params.baseRatePerHour * mult * regimeRateMultiplier(regimeState.current);
   switch (params.id) {
     case "hedger-short":
     case "hedger-long":
@@ -134,6 +140,17 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
     }, controllerMs);
   }
 
+  // LLM regime supervisor — updates the shared regime periodically (needs a key).
+  let supervisorTimer: ReturnType<typeof setInterval> | undefined;
+  const supervisorEnabled = (opts.supervisor ?? true) && getAnthropic() !== null;
+  if (supervisorEnabled) {
+    const supMs = opts.supervisorIntervalMs ?? 1_200_000; // 20 min
+    void runSupervisorOnce(markets); // prime the regime once at startup
+    supervisorTimer = setInterval(() => {
+      if (!shouldStop()) void runSupervisorOnce(markets);
+    }, supMs);
+  }
+
   logger.info(
     {
       agents: opts.assignments.length,
@@ -141,6 +158,8 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
       rateMultiplier: mult,
       durationMs: opts.durationMs ?? 0,
       controller: opts.controller ? "on" : "off",
+      supervisor: supervisorEnabled ? "on" : "off",
+      regime: regimeState.current.stance,
       dryRun: env.DRY_RUN,
       assignments: opts.assignments.map((a) => `#${a.index}:${a.archetype}@${a.market.name}`),
     },
@@ -172,6 +191,7 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
   } finally {
     clearInterval(refillTimer);
     if (controllerTimer) clearInterval(controllerTimer);
+    if (supervisorTimer) clearInterval(supervisorTimer);
     if (durTimer) clearTimeout(durTimer);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
