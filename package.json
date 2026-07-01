@@ -14,6 +14,10 @@
     "wallets": "tsx scripts/show-wallets.ts",
     "poc": "tsx scripts/poc.ts",
     "flatten": "tsx scripts/flatten.ts",
+    "provision": "tsx scripts/provision.ts",
+    "treasury": "tsx scripts/treasury-status.ts",
+    "agent": "tsx scripts/run-agent.ts",
+    "swarm": "tsx scripts/run-swarm.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

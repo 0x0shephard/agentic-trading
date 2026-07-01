@@ -1,6 +1,7 @@
-// Close every open position for one wallet across all configured markets.
-// Operational "flatten-all" tool; also used to clean up after a failed close.
-// Respects DRY_RUN (simulate-only when true). Usage: tsx scripts/flatten.ts [walletIndex]
+// Close every open position across a range of wallets and all markets.
+// Operational "flatten-all"; also cleans up after a swarm run. Respects DRY_RUN.
+//   npm run flatten 1        # just wallet 1
+//   npm run flatten 1 3      # wallets 1..3 (the whole fleet)
 import { env } from "../src/config/env";
 import { agentAccount } from "../src/chain/clients";
 import { MARKETS } from "../src/config/markets";
@@ -12,13 +13,12 @@ import { quoteMarket, amountLimitWithSlippage } from "../src/preview/sizing";
 import { toNumberX18 } from "../src/preview/orderPreview";
 import { logger } from "../src/logging/logger";
 
-const INDEX = Math.max(0, Number(process.argv[2] ?? 0));
-const SLIPPAGE_BPS = 100; // 1% floor on close output
+const START = Math.max(0, Number(process.argv[2] ?? 0));
+const END = Math.max(START, Number(process.argv[3] ?? START));
+const SLIPPAGE_BPS = 100;
 
-async function main(): Promise<void> {
-  const account = agentAccount(INDEX);
-  logger.info({ account: account.address, index: INDEX, dryRun: env.DRY_RUN }, "flatten start");
-
+async function flattenAccount(index: number): Promise<number> {
+  const account = agentAccount(index);
   let closed = 0;
   for (const market of MARKETS) {
     const pos = await getPosition(account.address, market.marketId);
@@ -38,36 +38,35 @@ async function main(): Promise<void> {
     const limit = amountLimitWithSlippage(!isLongPos, q.quoteAmount, SLIPPAGE_BPS);
 
     logger.info(
-      {
-        market: market.name,
-        side: isLongPos ? "long" : "short",
-        size: toNumberX18(pos.size),
-        expectOutUsd: toNumberX18(q.quoteAmount),
-      },
+      { index, market: market.name, side: isLongPos ? "long" : "short", size: toNumberX18(pos.size) },
       "closing position",
     );
-
     const res = await executeWrite({
       account,
       address: CONTRACTS.clearingHouse,
       abi: clearingHouseAbi,
       functionName: "closePosition",
       args: [market.marketId, closeSize, limit],
-      label: `close ${market.name}`,
+      label: `close #${index} ${market.name}`,
     });
-
-    if (res.reverted) {
-      logger.error({ market: market.name, reason: res.reason }, "close reverted — leaving position open");
+    if (res.reverted || res.skipped) {
+      logger.error({ index, market: market.name, reason: res.reason }, "close not completed");
       continue;
     }
     if (!env.DRY_RUN) {
       const after = await getPosition(account.address, market.marketId);
-      logger.info({ market: market.name, sizeAfter: toNumberX18(after.size) }, "closed");
+      logger.info({ index, market: market.name, sizeAfter: toNumberX18(after.size) }, "closed");
     }
     closed += 1;
   }
+  return closed;
+}
 
-  logger.info({ closed }, "flatten done");
+async function main(): Promise<void> {
+  logger.info({ start: START, end: END, dryRun: env.DRY_RUN }, "flatten start");
+  let total = 0;
+  for (let i = START; i <= END; i++) total += await flattenAccount(i);
+  logger.info({ closed: total }, "flatten done");
 }
 
 main().catch((e: unknown) => {

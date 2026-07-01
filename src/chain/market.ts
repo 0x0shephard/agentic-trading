@@ -1,7 +1,7 @@
 import type { Address, Hex } from "viem";
 import { publicClient } from "./clients";
 import { CONTRACTS } from "../config/addresses";
-import { marketRegistryAbi, vammAbi, clearingHouseAbi } from "./abis";
+import { marketRegistryAbi, vammAbi, clearingHouseAbi, oracleAbi } from "./abis";
 
 export interface MarketConfig {
   vamm: Address;
@@ -46,6 +46,11 @@ export async function getReserves(vamm: Address): Promise<{ base: bigint; quote:
 
 export async function getMarkPrice(vamm: Address): Promise<bigint> {
   return publicClient.readContract({ address: vamm, abi: vammAbi, functionName: "getMarkPrice" });
+}
+
+/** Index (oracle) price, x18. Reads the per-market oracle adapter's getPrice(). */
+export async function getIndexPrice(oracle: Address): Promise<bigint> {
+  return publicClient.readContract({ address: oracle, abi: oracleAbi, functionName: "getPrice" });
 }
 
 export interface Position {

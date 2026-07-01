@@ -173,12 +173,14 @@ export const vammAbi = [
   },
 ] as const;
 
+// Per-market oracle adapter: no-arg getPrice() returns the index price (x18).
+// (Matches overhaul useOracle.js — the adapter proxies the CuOracle internally.)
 export const oracleAbi = [
   {
     type: "function",
     name: "getPrice",
     stateMutability: "view",
-    inputs: [{ name: "_tokenSymbol", type: "string" }],
+    inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;

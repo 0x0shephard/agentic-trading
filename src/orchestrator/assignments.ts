@@ -1,0 +1,35 @@
+import type { ArchetypeId } from "../config/archetypes";
+import type { MarketDef } from "../config/markets";
+import { DEFAULT_MARKET } from "../config/markets";
+
+export interface Assignment {
+  index: number; // wallet index (1..N)
+  archetype: ArchetypeId;
+  market: MarketDef;
+}
+
+// Composition cycled across the available wallets. Ordered so small fleets get a
+// useful mix (churn + signal first), growing toward the doc's target proportions
+// as the fleet scales. `macro` (#7, LLM) is intentionally excluded here — it's
+// wired in Phase 4. Adjust freely; this is just the default distribution.
+const COMPOSITION: readonly ArchetypeId[] = [
+  "market-maker",
+  "basis-arb",
+  "momentum",
+  "hft-taker",
+  "hedger-short",
+  "hedger-long",
+  "market-maker",
+  "hft-taker",
+  "degen",
+];
+
+/** Assign archetypes to wallets 1..count by cycling the composition. */
+export function buildAssignments(count: number, market: MarketDef = DEFAULT_MARKET): Assignment[] {
+  const out: Assignment[] = [];
+  for (let i = 1; i <= count; i++) {
+    const archetype = COMPOSITION[(i - 1) % COMPOSITION.length]!;
+    out.push({ index: i, archetype, market });
+  }
+  return out;
+}
