@@ -20,6 +20,7 @@
     "swarm": "tsx scripts/run-swarm.ts",
     "supervisor": "tsx scripts/run-supervisor.ts",
     "report": "tsx scripts/report.ts",
+    "export:labels": "tsx scripts/export-labels.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
