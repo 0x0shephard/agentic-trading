@@ -108,7 +108,72 @@ agent/
 
 ---
 
-## 3. How it works — data flow
+## 3. How it works
+
+### System architecture (as built)
+
+```
+ scripts/ (CLI):  run-swarm ─▶ runOrchestrator       run-agent ─▶ runAgent
+                  provision · treasury · report · flatten · supervisor · diag-*
+                                       │
+                                       ▼
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ ORCHESTRATOR  (orchestrator/orchestrator.ts)                            │
+ │                                                                         │
+ │ shared state (control loops WRITE, agent loops READ each tick):         │
+ │   knobs {buildRate, churnRate, …}        ← controller                   │
+ │   regimeState {stance, vol}              ← supervisor                   │
+ │   VolumeTracker · Attribution            ← onTrade                      │
+ │   TokenBucket (global TPS cap)                                          │
+ │                                                                         │
+ │ background timers:                                                      │
+ │   controller  measureMetrics → stepController → mutate knobs            │
+ │   supervisor  summarizeMarkets → Claude → mutate regime      [API key]  │
+ │   refill      provision → top up agent ETH / collateral                │
+ │   report      buildFleetReport → "fleet report" heartbeat              │
+ └───────────────────────────────────────────────────────────────────────┘
+                                       │  spawns N concurrent agent loops
+                                       ▼
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ AGENT LOOP  (runtime/agentLoop.ts)                  × N, one wallet each│
+ │   sleep Poisson(rate = base × knob × regime × mult)   [interruptible]   │
+ │    → getMarketSnapshot        mark + index + deviation + reserves       │
+ │    → getAccountMarketState    own position + margin + collateral        │
+ │    → MarketHistory            SMA / returns (for momentum)              │
+ │    → strategy.decide(ctx)     registry → archetype  (macro → Claude)    │
+ │         → Intent (open / close / hold)                                  │
+ │    → gate.acquire()           global TPS token                          │
+ │    → executeIntent            price from live reserves + slippage cap   │
+ │    → onTrade(event)           → VolumeTracker + Attribution             │
+ └───────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ CHAIN LAYER  (chain/)                                                   │
+ │   executeWrite:  simulate → DRY_RUN stop → gas est × 1.25 →             │
+ │                  affordability pre-flight → send → verify receipt       │
+ │   reads: market (reserves / mark / index / position) · native ETH      │
+ │   clients: publicClient (reads)  ·  walletFor(account) (writes)         │
+ └───────────────────────────────────────────────────────────────────────┘
+                                       │  viem  ·  Sepolia-only guard
+                                       ▼
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ ByteStrike contracts on Sepolia                                        │
+ │   ClearingHouse · CollateralVault · MarketRegistry ·                   │
+ │   vAMM (per market) · Oracle · mock USDC                               │
+ └───────────────────────────────────────────────────────────────────────┘
+
+ config/  env · addresses · markets · archetypes · provisioning · constants
+          (read by every layer)
+```
+
+**The core idea:** the control loops (controller, supervisor) and the agent loops
+communicate only through **shared mutable state** — `knobs` and `regimeState`.
+Controllers *write* them on their own timers; every agent *reads* them on its next
+tick (both for its Poisson cadence and inside `decide()`). Nothing calls anything
+across loops directly, so agents, controller, and supervisor stay decoupled.
+
+### One agent tick
 
 A single agent tick (`runAgent` in `runtime/agentLoop.ts`):
 

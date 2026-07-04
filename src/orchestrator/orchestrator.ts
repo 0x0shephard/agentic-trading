@@ -20,7 +20,7 @@ import { regimeState, regimeRateMultiplier } from "../llm/regime";
 import { runSupervisorOnce } from "../llm/supervisor";
 import { buildLabels } from "../observability/labels";
 import { Attribution } from "../observability/attribution";
-import { buildFleetReport, logFleetReport } from "../observability/report";
+import { buildFleetReport, printFleetReport, printRoster } from "../observability/report";
 
 export interface OrchestratorOpts {
   assignments: Assignment[];
@@ -170,7 +170,7 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
           controller: opts.controller,
           volumeUsd: volume.volumeUsd(),
         });
-        logFleetReport(report);
+        printFleetReport(report);
       } catch (e) {
         logger.error({ err: e instanceof Error ? e.message : String(e) }, "fleet report failed");
       }
@@ -194,6 +194,7 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
     },
     "orchestrator start",
   );
+  printRoster(opts.assignments); // label ↔ strategy ↔ address, up front
 
   const runs = opts.assignments.map((a) => {
     const params = DEFAULT_ARCHETYPES[a.archetype];

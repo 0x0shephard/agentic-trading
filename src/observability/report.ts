@@ -166,7 +166,24 @@ export async function buildFleetReport(assignments: Assignment[], opts: ReportOp
   };
 }
 
-/** Compact structured log line — used as the running swarm's heartbeat. */
+/** Print the agent roster: label ↔ strategy ↔ full wallet address (for
+ *  cross-referencing addresses seen in the dashboard against agents). */
+export function printRoster(assignments: Assignment[]): void {
+  const labels = buildLabels(assignments);
+  console.log("\n=== AGENT ROSTER ===");
+  for (const a of assignments) {
+    const label = labels.get(a.index) ?? String(a.index);
+    const addr = agentAccount(a.index).address;
+    console.log(`  ${label.padEnd(12)} ${a.archetype.padEnd(14)} wallet#${String(a.index).padStart(2)}  ${addr}`);
+  }
+  console.log("");
+  logger.info(
+    { roster: assignments.map((a) => `${labels.get(a.index)}=${agentAccount(a.index).address}`) },
+    "agent roster",
+  );
+}
+
+/** Compact structured log line — machine-readable heartbeat (used on Railway). */
 export function logFleetReport(r: FleetReport): void {
   logger.info(
     {
@@ -196,8 +213,12 @@ export function printFleetReport(r: FleetReport): void {
       a.side === "flat"
         ? "flat"
         : `${a.side} ${a.sizeGpuHr.toFixed(2)}gpu $${a.notionalUsd.toFixed(2)} @${a.entryUsd.toFixed(4)} uPnL $${a.unrealizedPnlUsd.toFixed(2)} rPnL $${a.realizedPnlUsd.toFixed(2)}`;
+    const s = a.stats;
+    const statStr = s
+      ? `  [${s.trades} tx, vol $${s.volumeUsd.toFixed(2)}${s.reverts ? `, ${s.reverts} rvt` : ""}${s.skips ? `, ${s.skips} skip` : ""}]`
+      : "";
     line(
-      `${a.label.padEnd(9)} ${a.archetype.padEnd(13)} ${a.address.slice(0, 10)}… eth ${a.eth.toFixed(4)} vault $${a.vaultUsdc.toFixed(0).padStart(4)}  ${posStr}`,
+      `${a.label.padEnd(11)} ${a.archetype.padEnd(13)} ${a.address.slice(0, 10)}… eth ${a.eth.toFixed(4)} vault $${a.vaultUsdc.toFixed(0).padStart(4)}  ${posStr}${statStr}`,
     );
   }
   line("\n=== PER ARCHETYPE ===");
