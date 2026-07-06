@@ -18,6 +18,7 @@
     "treasury": "tsx scripts/treasury-status.ts",
     "agent": "tsx scripts/run-agent.ts",
     "swarm": "tsx scripts/run-swarm.ts",
+    "railway:swarm": "tsx scripts/run-railway-swarm.ts",
     "supervisor": "tsx scripts/run-supervisor.ts",
     "report": "tsx scripts/report.ts",
     "export:labels": "tsx scripts/export-labels.ts",
