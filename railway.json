@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "npm run railway:swarm",
+    "startCommand": "npm run railway:scheduled",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
