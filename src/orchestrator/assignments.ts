@@ -1,6 +1,6 @@
 import type { ArchetypeId } from "../config/archetypes";
 import type { MarketDef } from "../config/markets";
-import { DEFAULT_MARKET } from "../config/markets";
+import { MARKETS } from "../config/markets";
 
 export interface Assignment {
   index: number; // wallet index (1..N)
@@ -24,11 +24,13 @@ const COMPOSITION: readonly ArchetypeId[] = [
   "degen",
 ];
 
-/** Assign archetypes to wallets 1..count by cycling the composition. */
-export function buildAssignments(count: number, market: MarketDef = DEFAULT_MARKET): Assignment[] {
+/** Assign archetypes and markets to wallets 1..count by cycling both lists. */
+export function buildAssignments(count: number, markets: readonly MarketDef[] = MARKETS): Assignment[] {
+  if (markets.length === 0) throw new Error("buildAssignments requires at least one market");
   const out: Assignment[] = [];
   for (let i = 1; i <= count; i++) {
     const archetype = COMPOSITION[(i - 1) % COMPOSITION.length]!;
+    const market = markets[(i - 1) % markets.length]!;
     out.push({ index: i, archetype, market });
   }
   return out;
