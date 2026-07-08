@@ -9,10 +9,11 @@ export interface AgentStats {
   reverts: number; // sent but reverted on-chain
   skips: number; // skipped (couldn't afford gas)
   gasUsed: bigint;
+  gasCostWei: bigint;
 }
 
 function empty(): AgentStats {
-  return { trades: 0, volumeUsd: 0, opens: 0, closes: 0, reverts: 0, skips: 0, gasUsed: 0n };
+  return { trades: 0, volumeUsd: 0, opens: 0, closes: 0, reverts: 0, skips: 0, gasUsed: 0n, gasCostWei: 0n };
 }
 
 /** Accumulates per-agent trade attribution for the fleet report. */
@@ -29,6 +30,8 @@ export class Attribution {
       s.skips += 1;
       return;
     }
+    if (e.gasUsed) s.gasUsed += e.gasUsed;
+    if (e.gasCostWei) s.gasCostWei += e.gasCostWei;
     if (e.reverted) {
       s.reverts += 1;
       return;
@@ -37,7 +40,6 @@ export class Attribution {
     s.volumeUsd += e.notionalUsd;
     if (e.intent === "open") s.opens += 1;
     else s.closes += 1;
-    if (e.gasUsed) s.gasUsed += e.gasUsed;
   }
 
   get(index: number): AgentStats | undefined {
@@ -47,6 +49,12 @@ export class Attribution {
   totalVolumeUsd(): number {
     let sum = 0;
     for (const s of this.stats.values()) sum += s.volumeUsd;
+    return sum;
+  }
+
+  totalGasCostWei(): bigint {
+    let sum = 0n;
+    for (const s of this.stats.values()) sum += s.gasCostWei;
     return sum;
   }
 }

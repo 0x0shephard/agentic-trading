@@ -9,12 +9,15 @@
 //
 // This gives two runs per 24h, spaced as far apart as possible.
 import { assertChain } from "../src/chain/clients";
+import { ethBalance } from "../src/chain/native";
 import { DEFAULT_FLEET_SIZE } from "../src/config/provisioning";
 import { DEFAULT_CONTROLLER } from "../src/controller/controller";
 import { logger } from "../src/logging/logger";
 import { buildAssignments } from "../src/orchestrator/assignments";
 import { runOrchestrator } from "../src/orchestrator/orchestrator";
 import { provision } from "../src/treasury/treasury";
+import { agentMembers, treasury } from "../src/wallet/fleet";
+import { formatEther } from "viem";
 
 function numEnv(name: string, fallback: number, min: number): number {
   const raw = process.env[name];
@@ -69,7 +72,15 @@ const stop = () => {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
+async function fleetEthBalance(count: number): Promise<bigint> {
+  const members = [treasury(), ...agentMembers(count).map((m) => m.account)];
+  const balances = await Promise.all(members.map((m) => ethBalance(m.address)));
+  return balances.reduce((sum, x) => sum + x, 0n);
+}
+
 async function runOnce(cycle: number): Promise<void> {
+  const fleetEthBefore = await fleetEthBalance(count);
+
   if (provisionOnStart) {
     logger.info({ cycle, count }, "scheduled provisioning enabled — provisioning fleet before swarm run");
     await provision(count);
@@ -99,6 +110,18 @@ async function runOnce(cycle: number): Promise<void> {
     reportIntervalMs: reportSec * 1000,
     volumeWindowMs: 3_600_000,
   });
+
+  const fleetEthAfter = await fleetEthBalance(count);
+  const spentWei = fleetEthBefore > fleetEthAfter ? fleetEthBefore - fleetEthAfter : 0n;
+  logger.info(
+    {
+      cycle,
+      fleetEthBefore: formatEther(fleetEthBefore),
+      fleetEthAfter: formatEther(fleetEthAfter),
+      sessionCostEth: formatEther(spentWei),
+    },
+    "scheduled session ETH cost",
+  );
 }
 
 async function main(): Promise<void> {

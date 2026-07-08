@@ -41,6 +41,7 @@ export interface ArchetypeReport {
   volumeUsd: number;
   reverts: number;
   skips: number;
+  gasCostEth: number;
 }
 
 export interface FleetReport {
@@ -50,6 +51,7 @@ export interface FleetReport {
     oiUsd: number;
     tvlUsd: number;
     volumeUsd: number;
+    gasCostEth: number;
     volOverOi: number;
     tvlOverOi: number;
     target?: { oiUsd: number; volUsd: number; tvlUsd: number };
@@ -125,6 +127,7 @@ export async function buildFleetReport(assignments: Assignment[], opts: ReportOp
         volumeUsd: 0,
         reverts: 0,
         skips: 0,
+        gasCostEth: 0,
       };
     g.agents += 1;
     g.grossOiUsd += r.notionalUsd;
@@ -136,6 +139,7 @@ export async function buildFleetReport(assignments: Assignment[], opts: ReportOp
       g.volumeUsd += r.stats.volumeUsd;
       g.reverts += r.stats.reverts;
       g.skips += r.stats.skips;
+      g.gasCostEth += Number(r.stats.gasCostWei) / ETH;
     }
     byArch.set(r.archetype, g);
   }
@@ -143,6 +147,7 @@ export async function buildFleetReport(assignments: Assignment[], opts: ReportOp
   const oiUsd = perAgent.reduce((s, r) => s + r.notionalUsd, 0);
   const tvlUsd = perAgent.reduce((s, r) => s + r.vaultUsdc, 0);
   const volumeUsd = opts.volumeUsd ?? opts.attribution?.totalVolumeUsd() ?? 0;
+  const gasCostEth = opts.attribution ? Number(opts.attribution.totalGasCostWei()) / ETH : 0;
 
   return {
     perAgent,
@@ -151,6 +156,7 @@ export async function buildFleetReport(assignments: Assignment[], opts: ReportOp
       oiUsd,
       tvlUsd,
       volumeUsd,
+      gasCostEth,
       volOverOi: oiUsd > 0 ? volumeUsd / oiUsd : 0,
       tvlOverOi: oiUsd > 0 ? tvlUsd / oiUsd : 0,
       target: opts.controller
@@ -190,6 +196,7 @@ export function logFleetReport(r: FleetReport): void {
       oiUsd: round2(r.exchange.oiUsd),
       tvlUsd: round2(r.exchange.tvlUsd),
       volumeUsd: round2(r.exchange.volumeUsd),
+      gasCostEth: r.exchange.gasCostEth,
       volOverOi: round2(r.exchange.volOverOi),
       tvlOverOi: round2(r.exchange.tvlOverOi),
       regime: r.regime,
@@ -197,7 +204,7 @@ export function logFleetReport(r: FleetReport): void {
       churnRate: r.knobs ? round2(r.knobs.churnRate) : undefined,
       byArchetype: r.perArchetype.map(
         (a) =>
-          `${a.archetype}: OI $${round2(a.grossOiUsd)} vol $${round2(a.volumeUsd)} trades ${a.trades} rPnL $${round2(a.realizedPnlUsd)}`,
+          `${a.archetype}: OI $${round2(a.grossOiUsd)} vol $${round2(a.volumeUsd)} trades ${a.trades} gas ${a.gasCostEth.toFixed(6)} ETH rPnL $${round2(a.realizedPnlUsd)}`,
       ),
     },
     "fleet report",
@@ -215,7 +222,7 @@ export function printFleetReport(r: FleetReport): void {
         : `${a.side} ${a.sizeGpuHr.toFixed(2)}gpu $${a.notionalUsd.toFixed(2)} @${a.entryUsd.toFixed(4)} uPnL $${a.unrealizedPnlUsd.toFixed(2)} rPnL $${a.realizedPnlUsd.toFixed(2)}`;
     const s = a.stats;
     const statStr = s
-      ? `  [${s.trades} tx, vol $${s.volumeUsd.toFixed(2)}${s.reverts ? `, ${s.reverts} rvt` : ""}${s.skips ? `, ${s.skips} skip` : ""}]`
+      ? `  [${s.trades} tx, vol $${s.volumeUsd.toFixed(2)}, gas ${(Number(s.gasCostWei) / ETH).toFixed(6)} ETH${s.reverts ? `, ${s.reverts} rvt` : ""}${s.skips ? `, ${s.skips} skip` : ""}]`
       : "";
     line(
       `${a.label.padEnd(11)} ${a.archetype.padEnd(13)} ${a.address.slice(0, 10)}… eth ${a.eth.toFixed(4)} vault $${a.vaultUsdc.toFixed(0).padStart(4)}  ${posStr}${statStr}`,
@@ -226,10 +233,12 @@ export function printFleetReport(r: FleetReport): void {
     line(
       `${a.archetype.padEnd(13)} agents ${a.agents}  grossOI $${a.grossOiUsd.toFixed(2)}  netOI $${a.netOiUsd.toFixed(2)}  rPnL $${a.realizedPnlUsd.toFixed(2)}  uPnL $${a.unrealizedPnlUsd.toFixed(2)}  trades ${a.trades}  vol $${a.volumeUsd.toFixed(2)}`,
     );
+    line(`  gas ${a.gasCostEth.toFixed(6)} ETH`);
   }
   const e = r.exchange;
   line("\n=== EXCHANGE  (target OI:Vol:TVL = 1 : 1.20 : 0.55) ===");
   line(`OI $${e.oiUsd.toFixed(2)}   Vol $${e.volumeUsd.toFixed(2)}   TVL $${e.tvlUsd.toFixed(2)}`);
+  line(`session gas ${e.gasCostEth.toFixed(6)} ETH`);
   line(`ratios  Vol/OI ${e.volOverOi.toFixed(2)} (target 1.20)   TVL/OI ${e.tvlOverOi.toFixed(2)} (target 0.55)`);
   if (e.target) {
     line(`targets OI $${e.target.oiUsd}   Vol $${e.target.volUsd.toFixed(0)}   TVL $${e.target.tvlUsd.toFixed(0)}`);

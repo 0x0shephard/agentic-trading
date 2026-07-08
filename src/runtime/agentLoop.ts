@@ -18,6 +18,7 @@ export interface TradeEvent {
   intent: "open" | "close";
   notionalUsd: number;
   gasUsed?: bigint;
+  gasCostWei?: bigint;
   reverted: boolean;
   skipped: boolean;
 }
@@ -127,6 +128,7 @@ export async function runAgent(account: Account, strategy: Strategy, opts: RunAg
           intent: res.intent as "open" | "close",
           notionalUsd: res.notionalUsd,
           gasUsed: res.write.gasUsed,
+          gasCostWei: res.write.gasCostWei,
           reverted: res.write.reverted,
           skipped: false,
         });
@@ -138,6 +140,7 @@ export async function runAgent(account: Account, strategy: Strategy, opts: RunAg
             notionalUsd: res.notionalUsd.toFixed(2),
             hash: res.write.hash,
             gasUsed: res.write.gasUsed?.toString(),
+            gasCostWei: res.write.gasCostWei?.toString(),
           },
           "acted",
         );

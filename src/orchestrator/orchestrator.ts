@@ -230,6 +230,18 @@ export async function runOrchestrator(opts: OrchestratorOpts): Promise<void> {
     if (durTimer) clearTimeout(durTimer);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    try {
+      const report = await buildFleetReport(opts.assignments, {
+        attribution,
+        knobs,
+        controller: opts.controller,
+        volumeUsd: volume.volumeUsd(),
+      });
+      logger.info({ gasCostEth: report.exchange.gasCostEth, volumeUsd: round2(report.exchange.volumeUsd) }, "final session cost");
+      printFleetReport(report);
+    } catch (e) {
+      logger.error({ err: e instanceof Error ? e.message : String(e) }, "final fleet report failed");
+    }
   }
   logger.info("orchestrator stopped");
 }

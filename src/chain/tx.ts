@@ -22,6 +22,7 @@ export interface WriteResult {
   skipped?: boolean;
   hash?: `0x${string}`;
   gasUsed?: bigint;
+  gasCostWei?: bigint;
   reason?: string;
 }
 
@@ -143,17 +144,40 @@ export async function executeWrite(p: WriteParams): Promise<WriteResult> {
   });
   logger.info({ label, hash, gasLimit: gas.toString(), maxFeeGwei: formatGwei(fees.maxFeePerGas) }, "tx sent");
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  const gasCostWei = receipt.gasUsed * receipt.effectiveGasPrice;
   if (receipt.status !== "success") {
     const reason = await onChainRevertReason(hash, receipt.blockNumber);
     logger.error(
-      { label, hash, gasUsed: receipt.gasUsed.toString(), gasLimit: gas.toString(), reason },
+      {
+        label,
+        hash,
+        gasUsed: receipt.gasUsed.toString(),
+        gasCostEth: formatEther(gasCostWei),
+        gasLimit: gas.toString(),
+        reason,
+      },
       "tx reverted on-chain",
     );
-    return { label, dryRun: false, simulated: true, reverted: true, hash, gasUsed: receipt.gasUsed, reason };
+    return {
+      label,
+      dryRun: false,
+      simulated: true,
+      reverted: true,
+      hash,
+      gasUsed: receipt.gasUsed,
+      gasCostWei,
+      reason,
+    };
   }
   logger.info(
-    { label, hash, gasUsed: receipt.gasUsed.toString(), block: receipt.blockNumber.toString() },
+    {
+      label,
+      hash,
+      gasUsed: receipt.gasUsed.toString(),
+      gasCostEth: formatEther(gasCostWei),
+      block: receipt.blockNumber.toString(),
+    },
     "tx confirmed",
   );
-  return { label, dryRun: false, simulated: true, reverted: false, hash, gasUsed: receipt.gasUsed };
+  return { label, dryRun: false, simulated: true, reverted: false, hash, gasUsed: receipt.gasUsed, gasCostWei };
 }
