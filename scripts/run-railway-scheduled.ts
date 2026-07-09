@@ -8,6 +8,11 @@
 //   - repeat forever
 //
 // This gives two runs per 24h, spaced as far apart as possible.
+//
+// Continuous behavior:
+//   - set RAILWAY_RUN_CONTINUOUS=true, or set RAILWAY_DURATION_SEC=0
+//   - start one swarm run and keep it running until Railway stops the service,
+//     KILL_SWITCH=true, or a shutdown signal arrives.
 import { assertChain } from "../src/chain/clients";
 import { ethBalance } from "../src/chain/native";
 import { DEFAULT_FLEET_SIZE } from "../src/config/provisioning";
@@ -55,7 +60,9 @@ function sleep(ms: number, shouldStop: () => boolean): Promise<void> {
 }
 
 const count = Math.floor(numEnv("RAILWAY_AGENT_COUNT", DEFAULT_FLEET_SIZE, 1));
-const durationSec = numEnv("RAILWAY_DURATION_SEC", 600, 1);
+const rawDurationSec = numEnv("RAILWAY_DURATION_SEC", 600, 0);
+const runContinuous = boolEnv("RAILWAY_RUN_CONTINUOUS", false) || rawDurationSec === 0;
+const durationSec = runContinuous ? 0 : Math.max(1, rawDurationSec);
 const runIntervalSec = numEnv("RAILWAY_RUN_INTERVAL_SEC", 43_200, durationSec);
 const rateMultiplier = numEnv("RAILWAY_RATE_MULTIPLIER", 1, 0.01);
 const controllerSec = numEnv("RAILWAY_CONTROLLER_SEC", 30, 1);
@@ -91,11 +98,12 @@ async function runOnce(cycle: number): Promise<void> {
       cycle,
       count,
       durationSec,
+      runContinuous,
       runIntervalSec,
       rateMultiplier,
-      nextRunInSec: runIntervalSec,
+      nextRunInSec: runContinuous ? undefined : runIntervalSec,
     },
-    "scheduled swarm run starting",
+    runContinuous ? "continuous swarm run starting" : "scheduled swarm run starting",
   );
 
   const assignments = buildAssignments(count);
@@ -126,6 +134,12 @@ async function runOnce(cycle: number): Promise<void> {
 
 async function main(): Promise<void> {
   await assertChain();
+
+  if (runContinuous) {
+    await runOnce(1);
+    logger.info("continuous worker stopped");
+    return;
+  }
 
   let cycle = 0;
   while (!stopping) {
