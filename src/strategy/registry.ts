@@ -7,8 +7,9 @@ import { marketMakerStrategy } from "./archetypes/marketMaker";
 import { hftTakerStrategy } from "./archetypes/hftTaker";
 import { degenStrategy } from "./archetypes/degen";
 import { macroStrategy } from "./archetypes/macro";
+import { markManipulatorStrategy } from "./archetypes/markManipulator";
 
-/** Strategy per archetype. All 8 are wired; `macro` (#7) is LLM-backed. */
+/** Strategy per archetype. `macro` (#7) is LLM-backed; the rest are deterministic. */
 export const STRATEGY_BY_ARCHETYPE: Record<ArchetypeId, Strategy> = {
   "hedger-short": hedgerStrategy,
   "hedger-long": hedgerStrategy, // same module; direction from params.sideBias
@@ -18,6 +19,7 @@ export const STRATEGY_BY_ARCHETYPE: Record<ArchetypeId, Strategy> = {
   "hft-taker": hftTakerStrategy,
   degen: degenStrategy,
   macro: macroStrategy,
+  "mark-manipulator": markManipulatorStrategy,
 };
 
 export function strategyFor(id: ArchetypeId): Strategy {

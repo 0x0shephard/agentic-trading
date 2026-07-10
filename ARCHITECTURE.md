@@ -40,7 +40,7 @@ agent/
 │   │   ├── env.ts            # zod-validated env vars + Sepolia guard
 │   │   ├── addresses.ts      # deployed contract addresses (ClearingHouse, vault, …)
 │   │   ├── markets.ts        # the 5 curated markets (name + bytes32 id) + DEFAULT_MARKET
-│   │   ├── archetypes.ts     # the 8 archetype IDs + default params (cadence/size/lev/side)
+│   │   ├── archetypes.ts     # the 9 archetype IDs + default params (cadence/size/lev/side)
 │   │   └── provisioning.ts   # fleet funding targets (ETH/USDC/collateral, refill thresholds)
 │   │
 │   ├── chain/             # Everything that touches the blockchain
@@ -211,7 +211,7 @@ agent — the model can never bypass limits.
 
 ---
 
-## 4. The 8 archetypes
+## 4. The 9 archetypes
 
 Deterministic strategies are pure `(context) → Intent` functions; #7 is LLM-backed.
 
@@ -225,6 +225,7 @@ Deterministic strategies are pure `(context) → Intent` functions; #7 is LLM-ba
 | 6 | Stat-arb / HFT | `hft-taker` | tiny fast round-trips (TPS generator) | ~7.5 s |
 | 7 | Macro / directional | `macro` | **LLM** — discretionary conviction, clamped + gated | slow, rare |
 | 8 | Overleveraged degen | `degen` | max-lev, holds into liquidation (feedstock) | bursty |
+| 9 | Mark / oracle manipulator | `mark-manipulator` | **pushes** mark off index with a large clip, holds to harvest funding, then unwinds — the surveillance target | event-driven (~5 min) |
 
 Defaults (size/leverage/cadence/side) live in `config/archetypes.ts` — all
 controller-tunable at runtime via knobs.

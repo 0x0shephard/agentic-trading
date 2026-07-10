@@ -11,6 +11,7 @@ const ABBREV: Record<ArchetypeId, string> = {
   "hft-taker": "hft",
   macro: "macro",
   degen: "degen",
+  "mark-manipulator": "manip",
 };
 
 /** Map wallet index → readable label, numbering per archetype in assignment order. */
