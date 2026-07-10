@@ -23,6 +23,12 @@ const schema = z.object({
   LOG_PRETTY: z.enum(["true", "false"]).optional(),
   DRY_RUN: boolEnv("true"),
   KILL_SWITCH: boolEnv("false"),
+  // ── Surveillance monitor (separate Railway service; unused by the swarm) ──
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().trim().min(1).optional(),
+  MONITOR_POLL_MS: z.coerce.number().int().positive().default(45_000),
+  MONITOR_LOOKBACK_MIN: z.coerce.number().int().positive().default(120),
+  MONITOR_LABEL_WALLETS: z.coerce.number().int().positive().default(24),
 });
 
 const parsed = schema.safeParse(process.env);
