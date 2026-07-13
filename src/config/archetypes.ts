@@ -11,7 +11,8 @@ export type ArchetypeId =
   | "market-maker" // 5 — Counter-flow inventory mean-reverter
   | "hft-taker" //    6 — Stat-arb / HFT taker (many tiny round-trips)
   | "macro" //        7 — Macro / directional (LLM, Phase 4)
-  | "degen"; //       8 — Overleveraged degen (liquidation feedstock)
+  | "degen" //        8 — Overleveraged degen (liquidation feedstock)
+  | "mark-manipulator"; // 9 — Mark/oracle manipulator (funding exploiter)
 
 export interface ArchetypeParams {
   id: ArchetypeId;
@@ -110,5 +111,19 @@ export const DEFAULT_ARCHETYPES: Record<ArchetypeId, ArchetypeParams> = {
     targetLeverage: 9,
     sideBias: 0,
     slippageBps: 300,
+  },
+  "mark-manipulator": {
+    id: "mark-manipulator",
+    label: "Mark manipulator",
+    // Event-driven: push, hold a few ticks to harvest, unwind. Moderate cadence.
+    baseRatePerHour: 12,
+    targetNotionalUsd: 0,
+    // Large clip — must actually move the thin vAMM to open a dislocation.
+    clipNotionalUsd: 200,
+    targetLeverage: 3,
+    sideBias: 0,
+    // Price-insensitive on entry: it WANTS to move price, so allow wide slippage
+    // (its own impact must not reject the tx).
+    slippageBps: 400,
   },
 };

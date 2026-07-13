@@ -223,8 +223,69 @@ describe("degen (#8)", () => {
   });
 });
 
+describe("mark-manipulator (#9)", () => {
+  const p = DEFAULT_ARCHETYPES["mark-manipulator"];
+
+  it("flat with a tight peg opens a clip to widen the gap (pushes up when dev>=0)", async () => {
+    const i = await strategyFor("mark-manipulator").decide(
+      makeCtx({ params: p, markX18: parseUnits("4", 18), indexX18: parseUnits("4", 18) }),
+    );
+    expect(i.kind).toBe("open");
+    if (i.kind === "open") expect(i.isLong).toBe(true);
+  });
+
+  it("flat with mark slightly cheap pushes down (short)", async () => {
+    // mark 3.95 / index 4 → dev ≈ -125 bps (< ATTACK_MAX 400)
+    const i = await strategyFor("mark-manipulator").decide(
+      makeCtx({ params: p, markX18: parseUnits("3.95", 18), indexX18: parseUnits("4", 18) }),
+    );
+    expect(i.kind).toBe("open");
+    if (i.kind === "open") expect(i.isLong).toBe(false);
+  });
+
+  it("stands aside when already heavily dislocated", async () => {
+    // mark 4.4 / index 4 → dev 1000 bps ≥ 400
+    const i = await strategyFor("mark-manipulator").decide(
+      makeCtx({ params: p, markX18: parseUnits("4.4", 18), indexX18: parseUnits("4", 18) }),
+    );
+    expect(i.kind).toBe("hold");
+  });
+
+  it("holds when there's no index", async () => {
+    const i = await strategyFor("mark-manipulator").decide(
+      makeCtx({ params: p, hasIndex: false, markX18: parseUnits("4.2", 18), indexX18: parseUnits("4", 18) }),
+    );
+    expect(i.kind).toBe("hold");
+  });
+
+  it("unwinds once the dislocation has faded back to the peg", async () => {
+    const i = await strategyFor("mark-manipulator").decide(
+      makeCtx({ params: p, sizeX18: parseUnits("50", 18), markX18: parseUnits("4", 18), indexX18: parseUnits("4", 18) }),
+    );
+    expect(i.kind).toBe("close");
+  });
+
+  it("while holding a live dislocation it both harvest-unwinds and holds (timed exit)", async () => {
+    const kinds = new Set<string>();
+    for (let seed = 1; seed <= 60; seed++) {
+      const i = await strategyFor("mark-manipulator").decide(
+        makeCtx({
+          params: p,
+          sizeX18: parseUnits("50", 18),
+          markX18: parseUnits("4.1", 18), // dev ≈ 250 bps — live dislocation
+          indexX18: parseUnits("4", 18),
+          rngSeed: seed,
+        }),
+      );
+      kinds.add(i.kind);
+    }
+    expect(kinds.has("close")).toBe(true);
+    expect(kinds.has("hold")).toBe(true);
+  });
+});
+
 describe("registry", () => {
-  it("maps all 8 archetypes (incl. LLM macro)", () => {
+  it("maps all 9 archetypes (incl. LLM macro)", () => {
     const ids: ArchetypeId[] = [
       "hedger-short",
       "hedger-long",
@@ -234,6 +295,7 @@ describe("registry", () => {
       "hft-taker",
       "degen",
       "macro",
+      "mark-manipulator",
     ];
     for (const id of ids) expect(strategyFor(id)).toBeTruthy();
   });

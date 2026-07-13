@@ -22,6 +22,7 @@ const COMPOSITION: readonly ArchetypeId[] = [
   "market-maker",
   "hft-taker",
   "degen",
+  "mark-manipulator",
 ];
 
 /** Assign archetypes and markets to wallets 1..count by cycling both lists. */
