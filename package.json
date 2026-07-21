@@ -24,8 +24,14 @@
     "report": "tsx scripts/report.ts",
     "export:labels": "tsx scripts/export-labels.ts",
     "monitor": "tsx scripts/run-monitor.ts",
+    "stress:preflight": "tsx scripts/stress-preflight.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "stress:sample": "tsx scripts/stress-sample.ts",
+    "stress:keeper": "tsx scripts/stress-keeper-check.ts",
+    "stress:inject": "tsx scripts/stress-inject-check.ts",
+    "stress:run": "tsx scripts/stress-run.ts",
+    "alert:test": "tsx scripts/alert-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.0",

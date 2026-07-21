@@ -1,4 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createPublicClient, http } from "viem";
+import { sepolia } from "viem/chains";
 import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { MARKETS } from "../config/markets";
@@ -10,6 +12,8 @@ import { buildAssignments } from "../orchestrator/assignments";
 import { buildLabels } from "../observability/labels";
 import { sleepUntil } from "../runtime/cadence";
 import { ManipulationDetector } from "./detector";
+import { createHealthMonitor, healthPass } from "./health-monitor";
+import { dispatchManipulation } from "./alerting/dispatcher";
 import type { TradeEvent, Alert } from "./types";
 
 // canonical_pnl_events accounting types that represent an actual trade.
@@ -213,6 +217,17 @@ export async function monitorPass(sb: SupabaseClient, st: MonitorState): Promise
     const { error: insErr } = await sb.from("manipulation_alerts").insert(fresh);
     if (insErr) logger.error({ err: insErr.message }, "monitor: insert alerts failed");
     else logger.warn({ alerts: fresh.length }, "monitor: manipulation alerts raised");
+
+    // Escalate to Slack. Persisted first so the audit record survives even if
+    // delivery fails; delivery failures are logged and never abort the pass.
+    for (const r of fresh) {
+      await dispatchManipulation({
+        severity: String(r.severity), kind: String(r.kind), wallet: String(r.wallet), market: String(r.market),
+        devBps: Number(r.dev_bps ?? 0), impactBps: Number(r.impact_bps ?? 0),
+        notionalUsd: Number(r.notional_usd ?? 0), detail: String(r.detail),
+        txHashes: Array.isArray(r.tx_hashes) ? (r.tx_hashes as string[]) : [],
+      }).catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "manipulation escalation failed"));
+    }
   }
 
   st.cursorIso = rows[rows.length - 1]!.block_timestamp;
@@ -233,10 +248,29 @@ export async function runMonitorOnce(): Promise<number> {
   return monitorPass(makeSupabase(), freshState());
 }
 
-/** Continuous loop until SIGINT/SIGTERM (the Railway service entrypoint). */
+/** Continuous loop until SIGINT/SIGTERM (the Railway service entrypoint).
+ *  Runs two independent checks on their own cadences:
+ *    - trade-flow surveillance (Supabase) for market abuse
+ *    - protocol health (chain state) for loss events, freezes and stuck liquidations
+ *  Health reads chain directly so it survives an indexer outage. */
 export async function runMonitor(): Promise<void> {
-  const sb = makeSupabase();
+  // Health monitoring must NOT depend on Supabase being reachable. It reads chain
+  // state precisely so it keeps working when the indexer or database is down,
+  // which is when an incident is most likely. Treat trade-flow surveillance as
+  // optional and degrade to health-only rather than exiting.
+  let sb: SupabaseClient | null = null;
+  try {
+    sb = makeSupabase();
+  } catch (e) {
+    logger.error(
+      { err: e instanceof Error ? e.message : String(e) },
+      "monitor: trade-flow surveillance unavailable (no Supabase credentials) — continuing in health-only mode",
+    );
+  }
   const st = freshState();
+  const hm = createHealthMonitor();
+  const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
+  let lastHealth = 0;
   let stopping = false;
   const stop = (): void => {
     stopping = true;
@@ -248,13 +282,30 @@ export async function runMonitor(): Promise<void> {
     { pollMs: env.MONITOR_POLL_MS, lookbackMin: env.MONITOR_LOOKBACK_MIN, labeledWallets: st.labels.size },
     "surveillance monitor start",
   );
+  await hm.dispatcher.announceStart({
+    "Watched accounts": hm.accounts.length,
+    "Trade surveillance": sb ? `every ${env.MONITOR_POLL_MS / 1000}s` : "UNAVAILABLE (no DB credentials)",
+    "Health poll": `${env.HEALTH_POLL_MS / 1000}s`,
+  });
+
   while (!stopping) {
-    try {
-      const n = await monitorPass(sb, st);
-      logger.info({ cursor: st.cursorIso, alerts: n }, "monitor: pass done");
-    } catch (e) {
-      logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: pass failed");
+    if (sb) {
+      try {
+        const n = await monitorPass(sb, st);
+        logger.info({ cursor: st.cursorIso, alerts: n }, "monitor: pass done");
+      } catch (e) {
+        logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: pass failed");
+      }
     }
+
+    // Health runs on its own cadence and must never be skipped because the
+    // trade-flow pass threw: an indexer outage is exactly when it matters.
+    if (Date.now() - lastHealth >= env.HEALTH_POLL_MS) {
+      lastHealth = Date.now();
+      await healthPass(pc, hm).catch((e: unknown) =>
+        logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: health pass failed"));
+    }
+
     await sleepUntil(env.MONITOR_POLL_MS, () => stopping);
   }
   process.off("SIGINT", stop);

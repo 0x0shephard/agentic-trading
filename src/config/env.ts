@@ -29,6 +29,19 @@ const schema = z.object({
   MONITOR_POLL_MS: z.coerce.number().int().positive().default(45_000),
   MONITOR_LOOKBACK_MIN: z.coerce.number().int().positive().default(120),
   MONITOR_LABEL_WALLETS: z.coerce.number().int().positive().default(24),
+  // ── Alerting (Slack) ──────────────────────────────────────────────────────
+  // Webhook URLs are credentials: anyone holding one can post to the channel.
+  // Set them in Railway secrets / a gitignored .env, never in a tracked file.
+  SLACK_WEBHOOK_CRITICAL: z.string().url().optional(), // P1 -> #critical-alerts
+  SLACK_WEBHOOK_ALERTS: z.string().url().optional(), //   P2 -> #bytestrike-alerts
+  /** Minimum seconds between repeat notifications for the same condition. */
+  ALERT_COOLDOWN_SEC: z.coerce.number().int().positive().default(1_800),
+  /** Health poll cadence (chain state). Independent of the trade-flow poll. */
+  HEALTH_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Emit a heartbeat this often so silence is distinguishable from an outage. */
+  HEARTBEAT_HOURS: z.coerce.number().int().positive().default(24),
+  /** "true" to send a startup message confirming wiring. */
+  ALERT_ON_START: z.enum(["true", "false"]).default("true"),
 });
 
 const parsed = schema.safeParse(process.env);
