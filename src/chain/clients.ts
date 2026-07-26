@@ -11,11 +11,21 @@ import { mnemonicToAccount } from "viem/accounts";
 import { env } from "../config/env";
 import { CHAIN_ID } from "../config/constants";
 
-/** Shared read client (batched multicall enabled). */
+/** Shared read client. Contract-level multicalls are requested explicitly by the
+ * callers that need them; JSON-RPC batching stays off because several hosted RPC
+ * endpoints return a single object for a one-item batch, which violates the RPC
+ * batch shape and causes viem to fail while decoding the response. */
 export const publicClient: PublicClient = createPublicClient({
   chain: sepolia,
-  transport: http(env.SEPOLIA_RPC_URL, { batch: true }),
+  transport: http(env.SEPOLIA_RPC_URL),
 });
+
+export class WrongChainError extends Error {
+  constructor(readonly actualChainId: number) {
+    super(`Connected chainId ${actualChainId} is not Sepolia (${CHAIN_ID}). Aborting.`);
+    this.name = "WrongChainError";
+  }
+}
 
 /**
  * Hard safety rail #2: confirm the RPC is actually Sepolia before anything else.
@@ -24,7 +34,7 @@ export const publicClient: PublicClient = createPublicClient({
 export async function assertChain(): Promise<void> {
   const id = await publicClient.getChainId();
   if (id !== CHAIN_ID) {
-    throw new Error(`Connected chainId ${id} is not Sepolia (${CHAIN_ID}). Aborting.`);
+    throw new WrongChainError(id);
   }
 }
 
