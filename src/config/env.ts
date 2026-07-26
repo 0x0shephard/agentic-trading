@@ -38,6 +38,10 @@ const schema = z.object({
   ALERT_COOLDOWN_SEC: z.coerce.number().int().positive().default(1_800),
   /** Health poll cadence (chain state). Independent of the trade-flow poll. */
   HEALTH_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Admin-action watch cadence (on-chain admin events + admin-key txs). */
+  ADMIN_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Extra admin addresses to watch, comma-separated (owners are auto-included). */
+  ADMIN_WATCH_ADDRESSES: z.string().optional(),
   /** Emit a heartbeat this often so silence is distinguishable from an outage. */
   HEARTBEAT_HOURS: z.coerce.number().int().positive().default(24),
   /** "true" to send a startup message confirming wiring. */

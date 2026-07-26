@@ -9,6 +9,7 @@ import { env } from "../src/config/env";
 import { sendAlert } from "../src/surveillance/alerting/slack";
 import { checkHealth, newHealthState, SUPPRESSED } from "../src/surveillance/alerting/health";
 import { createHealthMonitor } from "../src/surveillance/health-monitor";
+import { adminWatchPass, newAdminWatchState, adminAddresses } from "../src/surveillance/alerting/adminwatch";
 import { logger } from "../src/logging/logger";
 
 async function main(): Promise<void> {
@@ -34,6 +35,28 @@ async function main(): Promise<void> {
     console.log(`\nsuppressed (documented known issues, will not alert):`);
     for (const k of SUPPRESSED.stuckLiquidatable) console.log(`  stuck-liquidatable: ${k}`);
     for (const k of SUPPRESSED.slowFeedMarkets) console.log(`  slow-feed warning:  ${k}`);
+    console.log("\n(dry run: nothing was sent)\n");
+    return;
+  }
+
+  if (mode === "admin") {
+    // Dry run: scan recent chain history for admin actions and print what would
+    // fire, without sending. `blocks` arg controls the window (default 2000).
+    const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
+    const window = BigInt(process.argv[3] || "2000");
+    const head = await pc.getBlockNumber();
+    const from = head - window > 0n ? head - window : 0n;
+    console.log(`\nadmin addresses watched: ${adminAddresses().join(", ")}`);
+    console.log(`scanning admin actions in blocks ${from}..${head} (${window} blocks)...`);
+    const st = newAdminWatchState(from - 1n);
+    const alerts = await adminWatchPass(pc, st, { send: false });
+    console.log(`\nadmin actions that WOULD alert: ${alerts.length}`);
+    for (const a of alerts) {
+      console.log(`\n  [${a.severity.toUpperCase()}] ${a.title}`);
+      console.log(`     ${a.detail}`);
+      for (const [k, v] of Object.entries(a.fields ?? {})) console.log(`     ${k}: ${v}`);
+      for (const l of a.links ?? []) console.log(`     ${l.url}`);
+    }
     console.log("\n(dry run: nothing was sent)\n");
     return;
   }

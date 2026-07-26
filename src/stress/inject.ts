@@ -142,7 +142,7 @@ export async function findPriceSlot(f: ForkClients, h: IndexHandle, maxSlot = 24
  * which the commit/reveal path can express.
  */
 export async function forcePriceData(
-  f: ForkClients, h: IndexHandle, opts: { priceX18?: bigint; lastUpdatedAt?: bigint },
+  f: ForkClients, h: IndexHandle, opts: { priceX18?: bigint; lastUpdatedAt?: bigint; mine?: boolean },
 ): Promise<void> {
   const base = await findPriceSlot(f, h);
   if (opts.priceX18 !== undefined) {
@@ -151,7 +151,10 @@ export async function forcePriceData(
   if (opts.lastUpdatedAt !== undefined) {
     await f.test.request({ method: "anvil_setStorageAt", params: [h.cuOracle, toHex(base + 1n, { size: 32 }), pad(toHex(opts.lastUpdatedAt), { size: 32 })] } as never);
   }
-  await mine(f, 1);
+  // mine defaults true. Pass mine:false to change the price WITHOUT producing a
+  // block, e.g. while block production is halted and queued transactions must
+  // not be processed yet (the sequencer-outage race).
+  if (opts.mine !== false) await mine(f, 1);
 }
 
 /** Age the index by `seconds` without changing its value (F-5 staleness). */

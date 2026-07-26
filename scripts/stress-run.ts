@@ -8,6 +8,7 @@ import { volatilityScenario } from "../src/stress/scenarios/volatility";
 import { depegScenario } from "../src/stress/scenarios/depeg";
 import { indexFailureScenario } from "../src/stress/scenarios/indexfail";
 import { sequencerScenario } from "../src/stress/scenarios/sequencer";
+import { sequencerPressureScenario } from "../src/stress/scenarios/sequencerPressure";
 import { agentAccount } from "../src/chain/clients";
 import { logger } from "../src/logging/logger";
 
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
     depeg: () => depegScenario(MARKETS, accounts),
     indexfail: () => indexFailureScenario(MARKETS, accounts),
     sequencer: () => sequencerScenario(MARKETS, accounts),
+    seqpressure: () => sequencerPressureScenario(MARKETS, accounts),
   };
   const make = defs[which];
   if (!make) {

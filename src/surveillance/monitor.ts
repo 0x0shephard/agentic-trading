@@ -14,6 +14,8 @@ import { sleepUntil } from "../runtime/cadence";
 import { ManipulationDetector } from "./detector";
 import { createHealthMonitor, healthPass } from "./health-monitor";
 import { dispatchManipulation } from "./alerting/dispatcher";
+import { adminWatchPass, newAdminWatchState } from "./alerting/adminwatch";
+import { priceGuardPass, newPriceGuardState } from "./alerting/priceguard";
 import type { TradeEvent, Alert } from "./types";
 
 // canonical_pnl_events accounting types that represent an actual trade.
@@ -270,7 +272,10 @@ export async function runMonitor(): Promise<void> {
   const st = freshState();
   const hm = createHealthMonitor();
   const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
+  const adminState = newAdminWatchState(await pc.getBlockNumber().catch(() => 0n));
+  const priceGuard = newPriceGuardState();
   let lastHealth = 0;
+  let lastAdmin = 0;
   let stopping = false;
   const stop = (): void => {
     stopping = true;
@@ -304,6 +309,18 @@ export async function runMonitor(): Promise<void> {
       lastHealth = Date.now();
       await healthPass(pc, hm).catch((e: unknown) =>
         logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: health pass failed"));
+      // Bad-published-price circuit breaker shares the health cadence.
+      await priceGuardPass(pc, priceGuard)
+        .then((alerts) => { if (alerts.length) logger.warn({ priceAlerts: alerts.length }, "monitor: suspected bad price"); })
+        .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: price guard failed"));
+    }
+
+    // Admin-action watch on its own cadence (chain reads; indexer-independent).
+    if (Date.now() - lastAdmin >= env.ADMIN_POLL_MS) {
+      lastAdmin = Date.now();
+      await adminWatchPass(pc, adminState)
+        .then((alerts) => { if (alerts.length) logger.warn({ adminAlerts: alerts.length }, "monitor: admin actions alerted"); })
+        .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: admin watch failed"));
     }
 
     await sleepUntil(env.MONITOR_POLL_MS, () => stopping);

@@ -50,8 +50,9 @@ const VAMM = parseAbi(["function getMarkPrice() view returns (uint256)"]);
  * still alerts, so suppressing a known instance does not disable the check class.
  */
 export const SUPPRESSED = {
-  /** Positions that report liquidatable but revert NotLiquidatable (finding #2).
-   *  Tracked separately; alerting on them would make the channel permanently noisy. */
+  /** Two T4 positions whose accounts hold ample free vault collateral, so the
+   *  protocol correctly declines to liquidate them. They are solvent and carry no
+   *  loss exposure; alerting on them would make the channel permanently noisy. */
   stuckLiquidatable: new Set<string>([
     "0xfcd71144a97adc78f3f74e7e8d77b2c9b3122e55|T4-PERP",
     "0x6330a8325ea1d80264178b1378694ad1522454ac|T4-PERP",

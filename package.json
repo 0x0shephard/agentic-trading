@@ -31,7 +31,8 @@
     "stress:keeper": "tsx scripts/stress-keeper-check.ts",
     "stress:inject": "tsx scripts/stress-inject-check.ts",
     "stress:run": "tsx scripts/stress-run.ts",
-    "alert:test": "tsx scripts/alert-test.ts"
+    "alert:test": "tsx scripts/alert-test.ts",
+    "priceguard:test": "tsx scripts/priceguard-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.0",
