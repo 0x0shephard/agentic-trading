@@ -3,6 +3,10 @@
 //   npm run alert:test          send one message to each channel
 //   npm run alert:test health   run the REAL health checks against live chain
 //                               and report what would fire (sends nothing)
+//   npm run alert:test net      probe the RPC endpoint(s): head, latency, lag,
+//                               and what the network monitor would fire (sends nothing)
+//   npm run alert:test site     query the gateway window (Axiom) + probe uptime,
+//                               and what the site/login monitor would fire (sends nothing)
 import { createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { env } from "../src/config/env";
@@ -10,6 +14,8 @@ import { sendAlert } from "../src/surveillance/alerting/slack";
 import { checkHealth, newHealthState, SUPPRESSED } from "../src/surveillance/alerting/health";
 import { createHealthMonitor } from "../src/surveillance/health-monitor";
 import { adminWatchPass, newAdminWatchState, adminAddresses } from "../src/surveillance/alerting/adminwatch";
+import { checkNetHealth, createNetClients, newNetHealthState, netConfigFromEnv } from "../src/surveillance/alerting/nethealth";
+import { checkSiteHealth, createSiteDeps, siteConfigFromEnv, siteHealthEnabled } from "../src/surveillance/alerting/sitehealth";
 import { logger } from "../src/logging/logger";
 
 async function main(): Promise<void> {
@@ -56,6 +62,76 @@ async function main(): Promise<void> {
       console.log(`     ${a.detail}`);
       for (const [k, v] of Object.entries(a.fields ?? {})) console.log(`     ${k}: ${v}`);
       for (const l of a.links ?? []) console.log(`     ${l.url}`);
+    }
+    console.log("\n(dry run: nothing was sent)\n");
+    return;
+  }
+
+  if (mode === "net") {
+    // Dry run: probe the RPC endpoint(s) now and report status + what would fire.
+    // A single snapshot can't observe a stall (that needs elapsed time), but it
+    // proves the primary is reachable, shows the head, and cross-checks the
+    // fallback for lag.
+    const clients = createNetClients();
+    const cfg = netConfigFromEnv();
+    console.log(`\nprimary RPC:  ${clients.primary.ep.url}`);
+    console.log(`fallback RPC: ${clients.fallback ? clients.fallback.ep.url : "(none configured — set NET_FALLBACK_RPC_URL for down-vs-lag disambiguation)"}`);
+    console.log(`thresholds:   stall warn ${cfg.stallWarnMs / 60000}min / crit ${cfg.stallCritMs / 60000}min, lag ${cfg.lagBlocks} blocks, down after ${cfg.downConsecutive} misses`);
+
+    const t0 = Date.now();
+    let primaryHead: bigint | null = null;
+    try { primaryHead = await clients.primary.client.getBlockNumber(); } catch { /* reported below */ }
+    const primaryMs = Date.now() - t0;
+    let fallbackHead: bigint | null = null;
+    if (clients.fallback) { try { fallbackHead = await clients.fallback.client.getBlockNumber(); } catch { /* reported below */ } }
+
+    console.log(`\nprimary head:  ${primaryHead === null ? "UNREACHABLE" : `${primaryHead} (${primaryMs}ms)`}`);
+    if (clients.fallback) console.log(`fallback head: ${fallbackHead === null ? "UNREACHABLE" : fallbackHead}`);
+    if (primaryHead !== null && fallbackHead !== null) console.log(`head delta:    ${fallbackHead - primaryHead} block(s) (fallback − primary)`);
+
+    // Evaluate the real check once (down needs downConsecutive misses to fire, so
+    // a healthy single probe correctly shows nothing).
+    const signals = await checkNetHealth(clients, newNetHealthState(), cfg);
+    console.log(`\nconditions currently TRUE: ${signals.length}`);
+    for (const s of signals) {
+      console.log(`\n  [${s.severity.toUpperCase()}] ${s.title}`);
+      console.log(`     key: ${s.key}`);
+      console.log(`     ${s.detail}`);
+      for (const [k, v] of Object.entries(s.fields)) console.log(`     ${k}: ${v}`);
+    }
+    console.log("\n(dry run: nothing was sent)\n");
+    return;
+  }
+
+  if (mode === "site") {
+    // Dry run: query the real gateway window + probe uptime, print status and
+    // what would fire. Sends nothing.
+    if (!siteHealthEnabled()) {
+      console.log("\nsite health DISABLED: set AXIOM_API_TOKEN + AXIOM_DATASET (gateway logs) and/or SITE_URL / SITE_API_HEALTH_URL (uptime).\n");
+      return;
+    }
+    const deps = createSiteDeps();
+    const cfg = siteConfigFromEnv();
+    console.log(`\nwindow: last ${cfg.windowMin} min   min-sample: ${cfg.minSample}`);
+    console.log(`thresholds: 5xx warn ${cfg.err5xxWarnPct}%/crit ${cfg.err5xxCritPct}% (floor ${cfg.err5xxAbsFloor}), 429 warn ${cfg.rlWarnPct}%/crit ${cfg.rlCritPct}%, auth-fail/IP warn ${cfg.authFailIpWarn}/crit ${cfg.authFailIpCrit}`);
+    console.log(`uptime targets: ${deps.uptimeTargets.length ? deps.uptimeTargets.map((t) => `${t.label} ${t.url}`).join(", ") : "(none configured)"}`);
+
+    const gw = await deps.gateway(cfg.windowMin).catch((e: unknown) => { console.log(`  gateway query error: ${e instanceof Error ? e.message : String(e)}`); return null; });
+    if (gw) {
+      const pct = (n: number) => gw.total ? `${(n / gw.total * 100).toFixed(1)}%` : "n/a";
+      console.log(`\ngateway window: ${gw.total} requests   5xx=${gw.err5xx} (${pct(gw.err5xx)})   429=${gw.rl} (${pct(gw.rl)})`);
+      console.log(`top failed-auth IPs: ${gw.authFailByIp.length ? gw.authFailByIp.slice(0, 5).map((x) => `${x.ip}=${x.fails}`).join(", ") : "none"}`);
+    } else {
+      console.log("\ngateway window: unavailable (Axiom not configured or query failed)");
+    }
+
+    const signals = await checkSiteHealth(deps, cfg);
+    console.log(`\nconditions currently TRUE: ${signals.length}`);
+    for (const s of signals) {
+      console.log(`\n  [${s.severity.toUpperCase()}] ${s.title}`);
+      console.log(`     key: ${s.key}`);
+      console.log(`     ${s.detail}`);
+      for (const [k, v] of Object.entries(s.fields)) console.log(`     ${k}: ${v}`);
     }
     console.log("\n(dry run: nothing was sent)\n");
     return;

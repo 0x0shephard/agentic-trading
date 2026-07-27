@@ -16,6 +16,8 @@ import { createHealthMonitor, healthPass } from "./health-monitor";
 import { dispatchManipulation } from "./alerting/dispatcher";
 import { adminWatchPass, newAdminWatchState } from "./alerting/adminwatch";
 import { priceGuardPass, newPriceGuardState } from "./alerting/priceguard";
+import { createNetMonitor, netHealthPass } from "./alerting/nethealth";
+import { createSiteMonitor, siteHealthPass, siteHealthEnabled } from "./alerting/sitehealth";
 import type { TradeEvent, Alert } from "./types";
 
 // canonical_pnl_events accounting types that represent an actual trade.
@@ -274,8 +276,12 @@ export async function runMonitor(): Promise<void> {
   const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
   const adminState = newAdminWatchState(await pc.getBlockNumber().catch(() => 0n));
   const priceGuard = newPriceGuardState();
+  const netMonitor = createNetMonitor();
+  const siteMonitor = siteHealthEnabled() ? createSiteMonitor() : null;
   let lastHealth = 0;
   let lastAdmin = 0;
+  let lastNet = 0;
+  let lastSite = 0;
   let stopping = false;
   const stop = (): void => {
     stopping = true;
@@ -291,6 +297,8 @@ export async function runMonitor(): Promise<void> {
     "Watched accounts": hm.accounts.length,
     "Trade surveillance": sb ? `every ${env.MONITOR_POLL_MS / 1000}s` : "UNAVAILABLE (no DB credentials)",
     "Health poll": `${env.HEALTH_POLL_MS / 1000}s`,
+    "Network health poll": `${env.NET_POLL_MS / 1000}s${env.NET_FALLBACK_RPC_URL ? " (+ fallback cross-check)" : ""}`,
+    "Site/login health": siteMonitor ? `every ${env.SITE_POLL_MS / 1000}s` : "UNAVAILABLE (no Axiom token or uptime URLs)",
   });
 
   while (!stopping) {
@@ -321,6 +329,22 @@ export async function runMonitor(): Promise<void> {
       await adminWatchPass(pc, adminState)
         .then((alerts) => { if (alerts.length) logger.warn({ adminAlerts: alerts.length }, "monitor: admin actions alerted"); })
         .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: admin watch failed"));
+    }
+
+    // Network / RPC health on its own cadence. Uses its own bounded clients so a
+    // dead or frozen primary endpoint is the signal, not a swallowed exception.
+    if (Date.now() - lastNet >= env.NET_POLL_MS) {
+      lastNet = Date.now();
+      await netHealthPass(netMonitor)
+        .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: net health failed"));
+    }
+
+    // Login / site health on its own (slower) cadence: gateway-log rates from
+    // Axiom plus external uptime probes. Off-chain, so it degrades independently.
+    if (siteMonitor && Date.now() - lastSite >= env.SITE_POLL_MS) {
+      lastSite = Date.now();
+      await siteHealthPass(siteMonitor)
+        .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: site health failed"));
     }
 
     await sleepUntil(env.MONITOR_POLL_MS, () => stopping);

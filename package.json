@@ -33,7 +33,8 @@
     "stress:run": "tsx scripts/stress-run.ts",
     "alert:test": "tsx scripts/alert-test.ts",
     "priceguard:test": "tsx scripts/priceguard-test.ts",
-    "pause:drill": "tsx scripts/pause-drill.ts"
+    "pause:drill": "tsx scripts/pause-drill.ts",
+    "resolve:liquidatable": "tsx scripts/resolve-liquidatable.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.0",

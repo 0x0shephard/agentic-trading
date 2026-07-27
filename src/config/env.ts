@@ -40,6 +40,45 @@ const schema = z.object({
   HEALTH_POLL_MS: z.coerce.number().int().positive().default(60_000),
   /** Admin-action watch cadence (on-chain admin events + admin-key txs). */
   ADMIN_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  // ── Network / RPC health monitor ──────────────────────────────────────────
+  /** Network-health poll cadence (primary RPC liveness, head advance, lag). */
+  NET_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Optional second RPC endpoint to cross-check the primary (down vs lag). */
+  NET_FALLBACK_RPC_URL: z.string().url().optional(),
+  /** Warn if the chain head has not advanced for this long (ms). Default 3 min. */
+  NET_STALL_WARN_MS: z.coerce.number().int().positive().default(180_000),
+  /** Critical if the head has not advanced for this long (ms). Default 10 min. */
+  NET_STALL_CRIT_MS: z.coerce.number().int().positive().default(600_000),
+  /** Warn if the primary trails the fallback by at least this many blocks. */
+  NET_LAG_BLOCKS: z.coerce.number().int().positive().default(20),
+  // ── Login / site health monitor (gateway logs via Axiom + uptime probes) ──
+  /** Axiom API token with QUERY permission on the gateway-log dataset (secret). */
+  AXIOM_API_TOKEN: z.string().trim().min(1).optional(),
+  /** Axiom dataset the Cloudflare gateway ships request logs to. */
+  AXIOM_DATASET: z.string().trim().min(1).optional(),
+  /** Site-health poll cadence (Axiom queries + uptime probes). Default 5 min. */
+  SITE_POLL_MS: z.coerce.number().int().positive().default(300_000),
+  /** Lookback window for gateway-log rates (minutes). */
+  SITE_WINDOW_MIN: z.coerce.number().int().positive().default(15),
+  /** Skip rate checks below this many requests in the window (small-sample noise). */
+  SITE_MIN_SAMPLE: z.coerce.number().int().positive().default(50),
+  /** 5xx error-rate warn/critical thresholds (percent of requests). */
+  SITE_ERR5XX_WARN_PCT: z.coerce.number().positive().default(2),
+  SITE_ERR5XX_CRIT_PCT: z.coerce.number().positive().default(10),
+  /** Absolute 5xx count that alerts regardless of rate (baseline is ~0). */
+  SITE_ERR5XX_ABS_FLOOR: z.coerce.number().int().positive().default(5),
+  /** Rate-limit (429) share warn/critical thresholds (percent of requests).
+   *  The agents drive a high 429 baseline (observed ~13% over a week, ~30% in a
+   *  busy 15-min window), so these sit well above that: they fire only when the
+   *  gateway is rejecting a majority of traffic (abuse, a runaway client, a DoS). */
+  SITE_RL_WARN_PCT: z.coerce.number().positive().default(60),
+  SITE_RL_CRIT_PCT: z.coerce.number().positive().default(85),
+  /** Failed auth attempts from one IP in the window: warn / critical. */
+  SITE_AUTHFAIL_IP_WARN: z.coerce.number().int().positive().default(10),
+  SITE_AUTHFAIL_IP_CRIT: z.coerce.number().int().positive().default(30),
+  /** Uptime-probe targets (optional; probed only if set). */
+  SITE_URL: z.string().url().optional(),
+  SITE_API_HEALTH_URL: z.string().url().optional(),
   /** Extra admin addresses to watch, comma-separated (owners are auto-included). */
   ADMIN_WATCH_ADDRESSES: z.string().optional(),
   /** Emit a heartbeat this often so silence is distinguishable from an outage. */
