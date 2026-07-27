@@ -30,7 +30,7 @@ const MAX_LOG_RANGE = 400n;
 // of getBlock calls. Beyond it we still run the event watch, just not the scan.
 const MAX_TX_SCAN = 150n;
 
-async function getLogsChunked(
+export async function getLogsChunked(
   pc: PublicClient, address: Address, event: AdminEventDef["event"], from: bigint, to: bigint,
 ): Promise<{ transactionHash: Hex; logIndex: number; blockNumber: bigint; args: Record<string, unknown> }[]> {
   const out: { transactionHash: Hex; logIndex: number; blockNumber: bigint; args: Record<string, unknown> }[] = [];
@@ -50,7 +50,7 @@ export function adminAddresses(): Address[] {
   return [...new Set([CONTRACTS.treasury.toLowerCase() as Address, ...extra])];
 }
 
-interface AdminEventDef {
+export interface AdminEventDef {
   contract: Address;
   label: string; // contract name for the alert
   event: ReturnType<typeof parseAbiItem>;
@@ -65,7 +65,7 @@ const usdc = (v: unknown) => `${Number(formatUnits((v as bigint) ?? 0n, 6)).toFi
 
 // The privileged actions worth paging on. Severity: critical for anything that
 // changes control, moves funds, upgrades, or halts a market; warning for tuning.
-const ADMIN_EVENTS: AdminEventDef[] = [
+export const ADMIN_EVENTS: AdminEventDef[] = [
   // ── ClearingHouse ──
   { contract: CONTRACTS.clearingHouse, label: "ClearingHouse", severity: "critical", title: "Ownership transferred",
     event: parseAbiItem("event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)"),

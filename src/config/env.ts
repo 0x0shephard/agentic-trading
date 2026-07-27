@@ -79,6 +79,14 @@ const schema = z.object({
   /** Uptime-probe targets (optional; probed only if set). */
   SITE_URL: z.string().url().optional(),
   SITE_API_HEALTH_URL: z.string().url().optional(),
+  // ── Log-retention export (RMF 1c): immutable R2 archive ───────────────────
+  /** Cloudflare account id (the R2 S3 endpoint host prefix). */
+  R2_ACCOUNT_ID: z.string().trim().min(1).optional(),
+  /** R2 access key id + secret, scoped to the archive bucket (secrets). */
+  R2_ACCESS_KEY_ID: z.string().trim().min(1).optional(),
+  R2_SECRET_ACCESS_KEY: z.string().trim().min(1).optional(),
+  /** The Object-Locked archive bucket name. */
+  R2_BUCKET: z.string().trim().min(1).optional(),
   /** Extra admin addresses to watch, comma-separated (owners are auto-included). */
   ADMIN_WATCH_ADDRESSES: z.string().optional(),
   /** Emit a heartbeat this often so silence is distinguishable from an outage. */

@@ -6,3 +6,6 @@ dist/
 *.log
 .DS_Store
 stress-results/
+
+# transient log-export dry-run output
+log-export-preview/
