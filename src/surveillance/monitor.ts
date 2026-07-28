@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { env } from "../config/env";
+import { CONTRACTS } from "../config/addresses";
 import { logger } from "../logging/logger";
 import { MARKETS } from "../config/markets";
 import type { MarketDef } from "../config/markets";
@@ -272,6 +273,9 @@ export async function runMonitor(): Promise<void> {
     );
   }
   const st = freshState();
+  const routineFundingRecipients = new Set(
+    [...st.labels.keys()].filter((address) => address !== CONTRACTS.treasury.toLowerCase()),
+  );
   const hm = createHealthMonitor();
   const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
   const adminState = newAdminWatchState(await pc.getBlockNumber().catch(() => 0n));
@@ -326,7 +330,7 @@ export async function runMonitor(): Promise<void> {
     // Admin-action watch on its own cadence (chain reads; indexer-independent).
     if (Date.now() - lastAdmin >= env.ADMIN_POLL_MS) {
       lastAdmin = Date.now();
-      await adminWatchPass(pc, adminState)
+      await adminWatchPass(pc, adminState, { routineRecipients: routineFundingRecipients })
         .then((alerts) => { if (alerts.length) logger.warn({ adminAlerts: alerts.length }, "monitor: admin actions alerted"); })
         .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: admin watch failed"));
     }

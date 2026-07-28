@@ -11,5 +11,6 @@ export const CONTRACTS = {
   feeRouter: "0xBCEA366b30eb1dcAC6968AECcc215E8797553a5e",
   insuranceFund: "0x132Ba3d3073FDa7440fb0594210C47eC19087eaD",
   usdc: "0x947Cc17D8CbC0Fc1E64de138eE4947d3AF9C26EE",
+  cuOracle: "0x97f557594bA32e51c0eA215B1886111F24E957af",
   treasury: "0xCc624fFA5df1F3F4b30aa8abd30186a86254F406",
 } as const satisfies Record<string, Address>;

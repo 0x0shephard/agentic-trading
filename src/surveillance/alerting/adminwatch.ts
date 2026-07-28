@@ -7,11 +7,11 @@
 //   1. EVENT WATCH   decodes the specific admin actions (pause, param change,
 //      fund movement, ownership, upgrade, oracle/feed change, role change) with
 //      full context. Sender-agnostic, so it also catches a compromised key.
-//   2. CATCH-ALL     watches the admin addresses' nonce; any increase means an
-//      admin transaction happened. Recent blocks are scanned for that key's tx
-//      hashes so even a raw transfer (which emits no event) is alerted, with a
-//      link. Hashes already covered by a decoded event alert are not repeated.
-import { formatUnits, parseAbiItem } from "viem";
+//   2. CATCH-ALL     scans recent blocks for admin-key transactions. Known
+//      operational oracle updates and agent funding are logged quietly; every
+//      other call or transfer is alerted with a transaction link. Hashes already
+//      covered by a decoded event alert are not repeated.
+import { formatEther, formatUnits, parseAbiItem, toFunctionSelector } from "viem";
 import type { Address, Hex, PublicClient } from "viem";
 import { CONTRACTS } from "../../config/addresses";
 import { logger } from "../../logging/logger";
@@ -29,6 +29,49 @@ const MAX_LOG_RANGE = 400n;
 // window is tiny; this guards against a one-off large gap turning into thousands
 // of getBlock calls. Beyond it we still run the event watch, just not the scan.
 const MAX_TX_SCAN = 150n;
+const ROUTINE_CU_ORACLE_SELECTORS = new Set<string>([
+  toFunctionSelector("commitPrice(bytes32,bytes32)"),
+  toFunctionSelector("updatePrices(bytes32,uint256,bytes32)"),
+]);
+
+interface AdminTransaction {
+  hash: Hex;
+  from: Address;
+  to: Address | null;
+  input: Hex;
+  value: bigint;
+}
+
+export type RoutineAdminTransaction = "oracle-price-publication" | "agent-eth-funding";
+
+/** Return the recognized operational purpose, or undefined for a tx that needs review. */
+export function classifyRoutineAdminTransaction(
+  tx: Pick<AdminTransaction, "from" | "to" | "input" | "value">,
+  routineRecipients: ReadonlySet<string> = new Set(),
+): RoutineAdminTransaction | undefined {
+  const to = tx.to?.toLowerCase();
+  const selector = tx.input.slice(0, 10).toLowerCase();
+
+  if (
+    to === CONTRACTS.cuOracle.toLowerCase()
+    && tx.value === 0n
+    && ROUTINE_CU_ORACLE_SELECTORS.has(selector)
+  ) {
+    return "oracle-price-publication";
+  }
+
+  if (
+    to
+    && to !== tx.from.toLowerCase()
+    && tx.input === "0x"
+    && tx.value > 0n
+    && routineRecipients.has(to)
+  ) {
+    return "agent-eth-funding";
+  }
+
+  return undefined;
+}
 
 export async function getLogsChunked(
   pc: PublicClient, address: Address, event: AdminEventDef["event"], from: bigint, to: bigint,
@@ -140,7 +183,9 @@ export function newAdminWatchState(fromBlock: bigint): AdminWatchState {
  *  With `send: false` the alerts are collected and returned but not delivered
  *  (used by the dry-run test). Returns the alerts fired/collected. */
 export async function adminWatchPass(
-  pc: PublicClient, st: AdminWatchState, opts: { send?: boolean } = {},
+  pc: PublicClient,
+  st: AdminWatchState,
+  opts: { send?: boolean; routineRecipients?: ReadonlySet<string> } = {},
 ): Promise<AlertMessage[]> {
   const send = opts.send !== false;
   const out: AlertMessage[] = [];
@@ -187,18 +232,30 @@ export async function adminWatchPass(
       try {
         block = await pc.getBlock({ blockNumber: b, includeTransactions: true });
       } catch { continue; }
-      for (const tx of block.transactions as unknown as { hash: Hex; from: Address }[]) {
+      for (const tx of block.transactions as unknown as AdminTransaction[]) {
         if (typeof tx === "string") continue;
         if (!admins.has(tx.from.toLowerCase())) continue;
         const h = tx.hash.toLowerCase();
         if (coveredTx.has(h)) continue; // already alerted with decoded detail
         if (st.seen.has(`tx:${h}`)) continue;
         st.seen.add(`tx:${h}`);
+        const routine = classifyRoutineAdminTransaction(tx, opts.routineRecipients);
+        if (routine) {
+          logger.debug({ txHash: tx.hash, block: Number(b), purpose: routine }, "adminwatch: routine admin transaction");
+          continue;
+        }
+        const selector = tx.input.slice(0, 10);
         await emit({
           severity: "critical",
           title: "Admin key transaction",
           detail: "A transaction was sent from an admin key that did not match a decoded admin action (for example a raw transfer or an untracked call). Review it.",
-          fields: { From: `${tx.from.slice(0, 10)}…`, Block: Number(b) },
+          fields: {
+            From: `${tx.from.slice(0, 10)}…`,
+            To: tx.to ? `${tx.to.slice(0, 10)}…` : "contract creation",
+            Selector: selector === "0x" ? "raw transfer" : selector,
+            "Value (ETH)": formatEther(tx.value),
+            Block: Number(b),
+          },
           links: [{ label: "View transaction", url: `${EXPLORER_TX}${tx.hash}` }],
         });
       }
