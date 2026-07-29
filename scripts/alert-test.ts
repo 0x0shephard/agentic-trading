@@ -7,6 +7,11 @@
 //                               and what the network monitor would fire (sends nothing)
 //   npm run alert:test site     query the gateway window (Axiom) + probe uptime,
 //                               and what the site/login monitor would fire (sends nothing)
+//   npm run alert:test classes  SEND one clearly-marked test alert per monitor class
+//                               to the live Slack channels (for evidence screenshots)
+//   npm run alert:test recovery SEND recovery notices (a cleared condition) to Slack
+//   npm run alert:test leverage compute the account-leverage distribution + 80%-of-cap
+//                               share against live chain (sends nothing)
 import { createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { env } from "../src/config/env";
@@ -16,6 +21,8 @@ import { createHealthMonitor } from "../src/surveillance/health-monitor";
 import { adminWatchPass, newAdminWatchState, adminAddresses } from "../src/surveillance/alerting/adminwatch";
 import { checkNetHealth, createNetClients, newNetHealthState, netConfigFromEnv } from "../src/surveillance/alerting/nethealth";
 import { checkSiteHealth, createSiteDeps, siteConfigFromEnv, siteHealthEnabled } from "../src/surveillance/alerting/sitehealth";
+import { readAccountLeverage, computeLeverageReport } from "../src/surveillance/leverage";
+import { MARKETS } from "../src/config/markets";
 import { logger } from "../src/logging/logger";
 
 async function main(): Promise<void> {
@@ -134,6 +141,100 @@ async function main(): Promise<void> {
       for (const [k, v] of Object.entries(s.fields)) console.log(`     ${k}: ${v}`);
     }
     console.log("\n(dry run: nothing was sent)\n");
+    return;
+  }
+
+  if (mode === "classes") {
+    // Send one representative, clearly-marked TEST alert per monitor class to the
+    // live channels, so each can be screenshotted for the Section 2 evidence. The
+    // content mirrors what each real monitor produces. Every message says it is a
+    // test so teammates in the channel are not alarmed.
+    const t = "test alert — no real incident";
+    const examples: { severity: "critical" | "warning" | "info"; title: string; detail: string; fields: Record<string, string | number>; links?: { label: string; url: string }[] }[] = [
+      { severity: "warning", title: "Index ageing: T4-PERP",
+        detail: `Index price is 9.1h old against a 12.0h limit. (${t}; verifying the index-freshness monitor.)`,
+        fields: { Market: "T4-PERP", "Index age": "9.1h", Limit: "12.0h", Class: "index freshness" } },
+      { severity: "critical", title: "Insurance fund draw detected",
+        detail: `The insurance fund paid out to cover a shortfall. Any draw is a P1 event. (${t}; verifying the insurance-fund watcher.)`,
+        fields: { "Amount paid": "1,250.00 USDC", "Total paid": "1,250.00", Cause: "liquidation shortfall", Class: "insurance fund" } },
+      { severity: "warning", title: "Sustained large basis: B200-PERP-V2",
+        detail: `Mark has held 26.4% away from index for 3 consecutive samples. (${t}; verifying the mark-to-index basis monitor.)`,
+        fields: { Market: "B200-PERP-V2", Basis: "-26.4%", Samples: 3, Class: "mark-to-index basis" } },
+      { severity: "warning", title: "1 position(s) liquidatable > 15min",
+        detail: `A position stayed below maintenance margin past the 15-minute window without being liquidated — the keeper-missed-a-run signal. (${t}; verifying the liquidation heartbeat.)`,
+        fields: { Count: 1, "Longest overdue": "22 min", Positions: "0xabcd1234 T4-PERP", Class: "liquidation heartbeat" } },
+      { severity: "critical", title: "Suspected bad published price: H100-GPU-PERP",
+        detail: `A published index moved +212% in a single step, beyond the 20% guard band. The print was NOT adopted as the baseline. (${t}; verifying the bad-price circuit breaker.)`,
+        fields: { Market: "H100-GPU-PERP", "Last accepted": "2.41", Rejected: "7.52", Move: "+212%", Class: "bad-price guard" } },
+      { severity: "critical", title: "Market pause changed",
+        detail: `MarketRegistry: market H100-GPU-PERP PAUSED by the admin key. (${t}; verifying the admin-action watch.)`,
+        fields: { Contract: "MarketRegistry", Action: "MarketPaused", By: "0xCc624f…", Class: "admin action" },
+        links: [{ label: "Etherscan", url: "https://sepolia.etherscan.io/address/0xCc624fFA5df1F3F4b30aa8abd30186a86254F406" }] },
+      { severity: "critical", title: "Primary RPC endpoint not responding",
+        detail: `The primary Sepolia RPC failed 2 consecutive checks; the fallback is responding, so the provider is degraded. (${t}; verifying the network-health monitor.)`,
+        fields: { Endpoint: "ethereum-sepolia-rpc.publicnode.com", "Consecutive failures": 2, Fallback: "up @ block 11361058", Class: "network / RPC health" } },
+      { severity: "warning", title: "Repeated failed logins from one IP",
+        detail: `A single source IP produced 14 failed authentication attempts in 15 minutes, consistent with a brute-force attempt. (${t}; verifying the login/site-health monitor.)`,
+        fields: { IP: "203.0.113.45", Failures: 14, Window: "15 min", Class: "login / site health" } },
+    ];
+    console.log(`\nsending ${examples.length} per-class TEST alerts to the live Slack channels...`);
+    let ok = 0;
+    for (const e of examples) {
+      const delivered = await sendAlert(e);
+      console.log(`  ${delivered ? "delivered" : "FAILED  "}  [${e.severity.toUpperCase()}] ${e.fields.Class}`);
+      if (delivered) ok++;
+      await new Promise((r) => setTimeout(r, 700)); // small gap so ordering is clean
+    }
+    console.log(`\n${ok}/${examples.length} delivered.${ok === examples.length ? " Screenshot each for the Section 2 evidence." : ""}\n`);
+    process.exit(ok === examples.length ? 0 : 1);
+  }
+
+  if (mode === "recovery") {
+    // Send representative RECOVERY notices (what the dispatcher posts when a
+    // previously-firing condition clears), matching two of the class alerts so the
+    // full alert -> resolved lifecycle can be screenshotted.
+    const recoveries: { severity: "critical" | "warning"; title: string; mins: number; condition: string }[] = [
+      { severity: "warning", title: "Index ageing: T4-PERP", mins: 34, condition: "stale-warning:T4-PERP" },
+      { severity: "critical", title: "Primary RPC endpoint not responding", mins: 6, condition: "rpc-down" },
+    ];
+    console.log(`\nsending ${recoveries.length} recovery notice(s) to Slack...`);
+    let ok = 0;
+    for (const r of recoveries) {
+      const delivered = await sendAlert({
+        severity: r.severity,
+        title: r.title,
+        detail: `Condition cleared after ${r.mins} minute(s). (test — verifying the recovery-notice path.)`,
+        fields: { Condition: r.condition },
+        recovery: true,
+      });
+      console.log(`  ${delivered ? "delivered" : "FAILED  "}  [RECOVERED] ${r.title}`);
+      if (delivered) ok++;
+      await new Promise((res) => setTimeout(res, 700));
+    }
+    console.log(`\n${ok}/${recoveries.length} delivered.\n`);
+    process.exit(ok === recoveries.length ? 0 : 1);
+  }
+
+  if (mode === "leverage") {
+    // Dry run: compute the account-leverage distribution + 80%-of-cap share against
+    // live chain, using the derived agent accounts as the universe (the real pass
+    // enumerates all trading accounts from the DB). Writes nothing.
+    const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
+    const hm = createHealthMonitor();
+    console.log(`\ncomputing leverage across ${hm.accounts.length} accounts × ${MARKETS.length} markets...`);
+    const inputs = await readAccountLeverage(pc, hm.accounts, MARKETS);
+    const report = computeLeverageReport(inputs);
+    console.log(`\naccounts with open positions: ${report.accountsWithPositions}`);
+    console.log(`above 80% of cap:            ${report.flaggedAccounts} (${(report.shareAbove80PctCap * 100).toFixed(1)}%)`);
+    console.log(`insolvent (equity ≤ 0):      ${report.insolventAccounts}`);
+    console.log(`median leverage:             ${report.medianLeverage.toFixed(2)}x   max: ${report.maxLeverage.toFixed(2)}x`);
+    console.log(`\ndistribution:`);
+    for (const b of report.distribution) console.log(`  ${b.bucket.padEnd(8)} ${"█".repeat(b.count)} ${b.count}`);
+    if (report.accounts.length) {
+      console.log(`\nper-account (open positions):`);
+      for (const a of report.accounts.slice(0, 15)) console.log(`  ${a.account.slice(0, 12)}…  ${Number.isFinite(a.leverage) ? a.leverage.toFixed(2) + "x" : "∞ (insolvent)"}${a.aboveCap80 ? "  ⚑ >80% cap" : ""}`);
+    }
+    console.log("\n(dry run: nothing written or sent)\n");
     return;
   }
 

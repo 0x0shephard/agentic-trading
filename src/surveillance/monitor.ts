@@ -19,6 +19,7 @@ import { adminWatchPass, newAdminWatchState } from "./alerting/adminwatch";
 import { priceGuardPass, newPriceGuardState } from "./alerting/priceguard";
 import { createNetMonitor, netHealthPass } from "./alerting/nethealth";
 import { createSiteMonitor, siteHealthPass, siteHealthEnabled } from "./alerting/sitehealth";
+import { leveragePass, leverageConfigFromEnv } from "./leverage";
 import type { TradeEvent, Alert } from "./types";
 
 // canonical_pnl_events accounting types that represent an actual trade.
@@ -282,10 +283,12 @@ export async function runMonitor(): Promise<void> {
   const priceGuard = newPriceGuardState();
   const netMonitor = createNetMonitor();
   const siteMonitor = siteHealthEnabled() ? createSiteMonitor() : null;
+  const levConfig = leverageConfigFromEnv();
   let lastHealth = 0;
   let lastAdmin = 0;
   let lastNet = 0;
   let lastSite = 0;
+  let lastLeverage = 0;
   let stopping = false;
   const stop = (): void => {
     stopping = true;
@@ -303,6 +306,7 @@ export async function runMonitor(): Promise<void> {
     "Health poll": `${env.HEALTH_POLL_MS / 1000}s`,
     "Network health poll": `${env.NET_POLL_MS / 1000}s${env.NET_FALLBACK_RPC_URL ? " (+ fallback cross-check)" : ""}`,
     "Site/login health": siteMonitor ? `every ${env.SITE_POLL_MS / 1000}s` : "UNAVAILABLE (no Axiom token or uptime URLs)",
+    "Leverage report": sb ? `every ${env.LEVERAGE_POLL_MS / 60000}min` : "UNAVAILABLE (no DB credentials)",
   });
 
   while (!stopping) {
@@ -349,6 +353,15 @@ export async function runMonitor(): Promise<void> {
       lastSite = Date.now();
       await siteHealthPass(siteMonitor)
         .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: site health failed"));
+    }
+
+    // Account-leverage distribution snapshot (RMF Section 11). Needs the DB to
+    // enumerate accounts and store the snapshot the monthly report reads.
+    if (sb && Date.now() - lastLeverage >= env.LEVERAGE_POLL_MS) {
+      lastLeverage = Date.now();
+      await leveragePass(pc, sb, levConfig)
+        .then((r) => { if (r) logger.info({ share: r.shareAbove80PctCap, accounts: r.accountsWithPositions }, "monitor: leverage snapshot"); })
+        .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: leverage pass failed"));
     }
 
     await sleepUntil(env.MONITOR_POLL_MS, () => stopping);

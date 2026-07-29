@@ -87,6 +87,13 @@ const schema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().trim().min(1).optional(),
   /** The Object-Locked archive bucket name. */
   R2_BUCKET: z.string().trim().min(1).optional(),
+  // ── Leverage distribution report (RMF Section 11 monthly reporting) ───────
+  /** Cadence for the account-leverage distribution snapshot. Default 6h. */
+  LEVERAGE_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
+  /** Max candidate accounts to scan on-chain per snapshot. */
+  LEVERAGE_MAX_ACCOUNTS: z.coerce.number().int().positive().default(1_000),
+  /** Alert if this % of accounts (with open positions) are above 80% of cap. */
+  LEVERAGE_ALERT_SHARE_PCT: z.coerce.number().positive().default(25),
   /** Extra admin addresses to watch, comma-separated (owners are auto-included). */
   ADMIN_WATCH_ADDRESSES: z.string().optional(),
   /** Emit a heartbeat this often so silence is distinguishable from an outage. */
