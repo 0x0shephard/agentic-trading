@@ -3,6 +3,8 @@ import {
   createWalletClient,
   http,
   type Account,
+  type HttpTransportConfig,
+  type Transport,
   type PublicClient,
   type WalletClient,
 } from "viem";
@@ -10,6 +12,12 @@ import { sepolia } from "viem/chains";
 import { mnemonicToAccount } from "viem/accounts";
 import { env } from "../config/env";
 import { CHAIN_ID } from "../config/constants";
+import { countHttpRequest, countedTransport } from "./rpcstats";
+
+/** HTTP transport whose JSON-RPC calls and HTTP requests are counted for RPC_STATS. */
+export function countedHttp(url: string, label: string, opts: HttpTransportConfig = {}): Transport {
+  return countedTransport(http(url, { ...opts, onFetchRequest: () => countHttpRequest() }), label);
+}
 
 /** Shared read client. Contract-level multicalls are requested explicitly by the
  * callers that need them; JSON-RPC batching stays off because several hosted RPC
@@ -17,7 +25,7 @@ import { CHAIN_ID } from "../config/constants";
  * batch shape and causes viem to fail while decoding the response. */
 export const publicClient: PublicClient = createPublicClient({
   chain: sepolia,
-  transport: http(env.SEPOLIA_RPC_URL),
+  transport: countedHttp(env.SEPOLIA_RPC_URL, "shared"),
 });
 
 export class WrongChainError extends Error {

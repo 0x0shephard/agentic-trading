@@ -13,34 +13,24 @@
 //   - basis is judged against each market's own recent baseline, never an absolute
 //     threshold: B200 trades at -1,986 bps in normal conditions and a fixed
 //     trigger would fire permanently and be muted.
-import { formatUnits, parseAbi } from "viem";
+//
+// RPC budget: every dynamic read of a pass comes from one multicall snapshot
+// (chainsnapshot.ts) and the liquidatable scan is one more multicall, so a pass
+// is a few eth_calls rather than one per read.
+import { formatUnits } from "viem";
 import type { Address, PublicClient } from "viem";
 import { CONTRACTS } from "../../config/addresses";
 import { MARKETS } from "../../config/markets";
 import type { MarketDef } from "../../config/markets";
 import type { Severity } from "./slack";
 import { logger } from "../../logging/logger";
+import { CH_ABI as CH, readerFor } from "./chainsnapshot";
+import type { ChainSnapshot } from "./chainsnapshot";
 
-const CH = parseAbi([
-  "function totalBadDebt() view returns (uint256)",
-  "function isLiquidatable(address,bytes32) view returns (bool)",
-  "function getPosition(address,bytes32) view returns ((int256 size, uint256 margin, uint256 entryPriceX18, uint256 lastFundingPayIndex, uint256 lastFundingReceiveIndex, int256 realizedPnL))",
-]);
-const IF = parseAbi([
-  "function balance() view returns (uint256)",
-  "function totalPaid() view returns (uint256)",
-]);
-const MR = parseAbi([
-  "function getMarket(bytes32) view returns ((address vamm, uint16 feeBps, bool paused, address oracle, address feeRouter, address insuranceFund, address baseAsset, address quoteToken, uint256 baseUnit))",
-]);
-const ADAPTER = parseAbi([
-  "function cuOracle() view returns (address)",
-  "function assetId() view returns (bytes32)",
-  "function maxAge() view returns (uint256)",
-  "function getPrice() view returns (uint256)",
-]);
-const CU = parseAbi(["function getLatestPrice(bytes32) view returns ((uint256 price, uint256 lastUpdatedAt))"]);
-const VAMM = parseAbi(["function getMarkPrice() view returns (uint256)"]);
+/** Calldata bytes per eth_call for the liquidatable scan: ~240 isLiquidatable
+ *  calls per chunk, so the default 25 accounts x 19 markets is 2 eth_calls while
+ *  keeping each call's gas well under public RPC eth_call caps. */
+const LIQ_SCAN_BATCH_BYTES = 16 * 1024;
 
 /**
  * Known, accepted conditions that must NOT alert.
@@ -105,18 +95,22 @@ export function newHealthState(): HealthState {
 
 const x18 = (v: bigint) => Number(formatUnits(v, 18));
 
-/** Run every health check once. Returns the conditions currently true. */
+/** Run every health check once. Returns the conditions currently true.
+ *  Pass `snap` to evaluate an already-taken snapshot (shared with the price
+ *  guard); otherwise one is taken here. */
 export async function checkHealth(
   pc: PublicClient,
   st: HealthState,
   accounts: readonly Address[],
   markets: readonly MarketDef[] = MARKETS,
+  snap?: ChainSnapshot,
 ): Promise<HealthSignal[]> {
   const out: HealthSignal[] = [];
+  const s = snap ?? (await readerFor(pc, markets).snapshot());
 
   // ── Loss events: baseline is a verified zero, so any value is significant ──
-  try {
-    const badDebt = (await pc.readContract({ address: CONTRACTS.clearingHouse, abi: CH, functionName: "totalBadDebt" })) as bigint;
+  if (s.badDebt !== null) {
+    const badDebt = s.badDebt;
     if (badDebt > 0n && (st.lastBadDebt === null || badDebt > st.lastBadDebt)) {
       out.push({
         key: "bad-debt",
@@ -127,15 +121,13 @@ export async function checkHealth(
       });
     }
     st.lastBadDebt = badDebt;
-  } catch (e) {
-    logger.warn({ err: e instanceof Error ? e.message : String(e) }, "health: totalBadDebt read failed");
+  } else {
+    logger.warn({ err: "read failed" }, "health: totalBadDebt read failed");
   }
 
-  try {
-    const [bal, paid] = (await Promise.all([
-      pc.readContract({ address: CONTRACTS.insuranceFund, abi: IF, functionName: "balance" }),
-      pc.readContract({ address: CONTRACTS.insuranceFund, abi: IF, functionName: "totalPaid" }),
-    ])) as [bigint, bigint];
+  if (s.ifBalance !== null && s.ifTotalPaid !== null) {
+    const bal = s.ifBalance;
+    const paid = s.ifTotalPaid;
     if (paid > 0n && (st.lastTotalPaid === null || paid > st.lastTotalPaid)) {
       out.push({
         key: "if-draw",
@@ -150,16 +142,15 @@ export async function checkHealth(
       });
     }
     st.lastTotalPaid = paid;
-  } catch (e) {
-    logger.warn({ err: e instanceof Error ? e.message : String(e) }, "health: InsuranceFund read failed");
+  } else {
+    logger.warn({ err: "read failed" }, "health: InsuranceFund read failed");
   }
 
   // ── Per-market: oracle freshness, availability, pause, basis ──────────────
   for (const m of markets) {
-    let cfg: { vamm: Address; oracle: Address; paused: boolean };
-    try {
-      cfg = (await pc.readContract({ address: CONTRACTS.marketRegistry, abi: MR, functionName: "getMarket", args: [m.marketId] })) as typeof cfg;
-    } catch { continue; }
+    const ms = s.markets.get(m.name);
+    const cfg = ms?.cfg;
+    if (!ms || !cfg) continue;
 
     if (cfg.paused) {
       out.push({
@@ -172,14 +163,9 @@ export async function checkHealth(
     }
 
     // Index freshness. A market freezes entirely once age exceeds maxAge.
-    try {
-      const [cu, assetId, maxAge] = (await Promise.all([
-        pc.readContract({ address: cfg.oracle, abi: ADAPTER, functionName: "cuOracle" }),
-        pc.readContract({ address: cfg.oracle, abi: ADAPTER, functionName: "assetId" }),
-        pc.readContract({ address: cfg.oracle, abi: ADAPTER, functionName: "maxAge" }),
-      ])) as [Address, `0x${string}`, bigint];
-
-      const pd = (await pc.readContract({ address: cu, abi: CU, functionName: "getLatestPrice", args: [assetId] })) as { price: bigint; lastUpdatedAt: bigint };
+    if (ms.adapter && ms.latest) {
+      const maxAge = ms.adapter.maxAge;
+      const pd = ms.latest;
       const ageSec = Math.floor(Date.now() / 1000) - Number(pd.lastUpdatedAt);
       const frac = Number(maxAge) > 0 ? ageSec / Number(maxAge) : 0;
       const hrs = (ageSec / 3600).toFixed(1);
@@ -202,15 +188,15 @@ export async function checkHealth(
           fields: { Market: m.name, "Index age": `${hrs}h`, Limit: `${limitHrs}h` },
         });
       }
-    } catch (e) {
-      logger.warn({ market: m.name, err: e instanceof Error ? e.message : String(e) }, "health: index freshness read failed");
+    } else {
+      logger.warn({ market: m.name, err: ms.adapter ? "getLatestPrice failed" : "adapter cuOracle/assetId/maxAge unavailable" }, "health: index freshness read failed");
     }
 
     // Oracle availability and basis.
     let indexPrice: number | null = null;
-    try {
-      indexPrice = x18((await pc.readContract({ address: cfg.oracle, abi: ADAPTER, functionName: "getPrice" })) as bigint);
-    } catch {
+    if (ms.indexPriceX18 !== null) {
+      indexPrice = x18(ms.indexPriceX18);
+    } else {
       out.push({
         key: `oracle-down:${m.name}`,
         severity: "critical",
@@ -220,39 +206,38 @@ export async function checkHealth(
       });
     }
 
-    if (indexPrice !== null && indexPrice > 0) {
-      try {
-        const mark = x18((await pc.readContract({ address: cfg.vamm, abi: VAMM, functionName: "getMarkPrice" })) as bigint);
-        const basis = ((mark - indexPrice) / indexPrice) * 10_000;
-        const base = st.basisBaseline.get(m.name);
-        if (base !== undefined && Math.abs(basis - base) >= BASIS_DEVIATION_BPS) {
-          out.push({
-            key: `basis-move:${m.name}`,
-            severity: "warning",
-            title: `Basis moved sharply: ${m.name}`,
-            detail: `Mark-to-index basis moved ${(basis - base).toFixed(0)} bps from its recent level. Measured as deviation from this market's own baseline, not an absolute threshold.`,
-            fields: { Market: m.name, Mark: mark.toFixed(4), Index: indexPrice.toFixed(4), "Basis now": `${basis.toFixed(0)} bps`, "Baseline": `${base.toFixed(0)} bps` },
-          });
-        }
-        // Slow-moving baseline so a genuine step change registers but drift does not.
-        st.basisBaseline.set(m.name, base === undefined ? basis : base * 0.9 + basis * 0.1);
+    if (indexPrice !== null && indexPrice > 0 && ms.markPriceX18 !== null) {
+      // (mark unreadable → skip basis this cycle)
+      const mark = x18(ms.markPriceX18);
+      const basis = ((mark - indexPrice) / indexPrice) * 10_000;
+      const base = st.basisBaseline.get(m.name);
+      if (base !== undefined && Math.abs(basis - base) >= BASIS_DEVIATION_BPS) {
+        out.push({
+          key: `basis-move:${m.name}`,
+          severity: "warning",
+          title: `Basis moved sharply: ${m.name}`,
+          detail: `Mark-to-index basis moved ${(basis - base).toFixed(0)} bps from its recent level. Measured as deviation from this market's own baseline, not an absolute threshold.`,
+          fields: { Market: m.name, Mark: mark.toFixed(4), Index: indexPrice.toFixed(4), "Basis now": `${basis.toFixed(0)} bps`, "Baseline": `${base.toFixed(0)} bps` },
+        });
+      }
+      // Slow-moving baseline so a genuine step change registers but drift does not.
+      st.basisBaseline.set(m.name, base === undefined ? basis : base * 0.9 + basis * 0.1);
 
-        // Sustained large gap: an absolute dislocation held over several samples.
-        // Threshold is set above the known structural discounts so those do not
-        // fire; only a genuinely new blow-out does. Counted in consecutive samples.
-        const breached = Math.abs(basis) >= SUSTAINED_BASIS_BPS;
-        const count = breached ? (st.basisBreachCount.get(m.name) ?? 0) + 1 : 0;
-        st.basisBreachCount.set(m.name, count);
-        if (count >= SUSTAINED_BASIS_SAMPLES) {
-          out.push({
-            key: `basis-sustained:${m.name}`,
-            severity: "warning",
-            title: `Sustained large basis: ${m.name}`,
-            detail: `Mark-to-index basis has held at ${(basis / 100).toFixed(1)}% for ${count} consecutive samples, beyond the ${(SUSTAINED_BASIS_BPS / 100).toFixed(0)}% threshold. A persistent large gap distorts funding and marks positions against a price far from the traded one.`,
-            fields: { Market: m.name, Basis: `${(basis / 100).toFixed(1)}%`, Mark: mark.toFixed(4), Index: indexPrice.toFixed(4), Samples: count },
-          });
-        }
-      } catch { /* mark unreadable; skip basis this cycle */ }
+      // Sustained large gap: an absolute dislocation held over several samples.
+      // Threshold is set above the known structural discounts so those do not
+      // fire; only a genuinely new blow-out does. Counted in consecutive samples.
+      const breached = Math.abs(basis) >= SUSTAINED_BASIS_BPS;
+      const count = breached ? (st.basisBreachCount.get(m.name) ?? 0) + 1 : 0;
+      st.basisBreachCount.set(m.name, count);
+      if (count >= SUSTAINED_BASIS_SAMPLES) {
+        out.push({
+          key: `basis-sustained:${m.name}`,
+          severity: "warning",
+          title: `Sustained large basis: ${m.name}`,
+          detail: `Mark-to-index basis has held at ${(basis / 100).toFixed(1)}% for ${count} consecutive samples, beyond the ${(SUSTAINED_BASIS_BPS / 100).toFixed(0)}% threshold. A persistent large gap distorts funding and marks positions against a price far from the traded one.`,
+          fields: { Market: m.name, Basis: `${(basis / 100).toFixed(1)}%`, Mark: mark.toFixed(4), Index: indexPrice.toFixed(4), Samples: count },
+        });
+      }
     }
   }
 
@@ -267,7 +252,7 @@ export async function checkHealth(
     const calls = accounts.flatMap((a) =>
       markets.map((m) => ({ address: CONTRACTS.clearingHouse, abi: CH, functionName: "isLiquidatable" as const, args: [a, m.marketId] })));
     try {
-      const res = (await pc.multicall({ contracts: calls as never, allowFailure: true })) as unknown as
+      const res = (await pc.multicall({ contracts: calls as never, allowFailure: true, batchSize: LIQ_SCAN_BATCH_BYTES })) as unknown as
         { status: string; result: unknown }[];
       res.forEach((r, i) => {
         if (r.status !== "success" || r.result !== true) return;
