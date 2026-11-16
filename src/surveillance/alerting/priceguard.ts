@@ -11,19 +11,15 @@
 // pausing the market (PRICE_GUARD_AUTOPAUSE=true plus a guardian key), which is
 // the "held pending corroboration" action. Auto-pause is OFF by default so the
 // monitor stays read-only unless the operator deliberately arms it.
-import { formatUnits, parseAbi } from "viem";
-import type { Address, PublicClient } from "viem";
-import { CONTRACTS } from "../../config/addresses";
+import { formatUnits } from "viem";
+import type { PublicClient } from "viem";
 import { MARKETS } from "../../config/markets";
 import type { MarketDef } from "../../config/markets";
 import { logger } from "../../logging/logger";
 import type { AlertMessage } from "./slack";
 import { sendAlert } from "./slack";
-
-const MR = parseAbi([
-  "function getMarket(bytes32) view returns ((address vamm, uint16 feeBps, bool paused, address oracle, address feeRouter, address insuranceFund, address baseAsset, address quoteToken, uint256 baseUnit))",
-]);
-const ADAPTER = parseAbi(["function getPrice() view returns (uint256)"]);
+import { readerFor } from "./chainsnapshot";
+import type { ChainSnapshot } from "./chainsnapshot";
 
 /** Single-step move (bps) beyond which a new index print is treated as suspect.
  *  GPU indices move slowly, so a 20% jump between publishes is a strong bad-print
@@ -45,11 +41,13 @@ export interface PriceGuardOptions {
   send?: boolean;
   /** Markets to check; defaults to all configured. */
   markets?: readonly MarketDef[];
+  /** Reuse a snapshot already taken by the health pass (no extra RPC reads). */
+  snapshot?: ChainSnapshot;
 }
 
 /**
- * One pass. For each market, read the published index and compare to the last
- * accepted value. Returns the alerts fired (or collected when send:false).
+ * One pass. For each market, take the published index (from the shared chain
+ * snapshot) and compare to the last accepted value. Returns the alerts fired (or collected when send:false).
  */
 export async function priceGuardPass(
   pc: PublicClient, st: PriceGuardState, opts: PriceGuardOptions = {},
@@ -58,21 +56,16 @@ export async function priceGuardPass(
   const markets = opts.markets ?? MARKETS;
   const out: AlertMessage[] = [];
 
-  for (const m of markets) {
-    let oracle: Address;
-    try {
-      const cfg = (await pc.readContract({ address: CONTRACTS.marketRegistry, abi: MR, functionName: "getMarket", args: [m.marketId] })) as { oracle: Address };
-      oracle = cfg.oracle;
-    } catch { continue; }
-    if (!oracle || oracle === "0x0000000000000000000000000000000000000000") continue;
+  const snap = opts.snapshot ?? (await readerFor(pc, markets).snapshot());
 
-    let price: number;
-    try {
-      price = x18((await pc.readContract({ address: oracle, abi: ADAPTER, functionName: "getPrice" })) as bigint);
-    } catch {
-      // Adapter refusing to serve (stale/zero) is the freshness monitor's job.
-      continue;
-    }
+  for (const m of markets) {
+    const ms = snap.markets.get(m.name);
+    const oracle = ms?.cfg?.oracle;
+    if (!ms || !oracle || oracle === "0x0000000000000000000000000000000000000000") continue;
+
+    // Adapter refusing to serve (stale/zero) is the freshness monitor's job.
+    if (ms.indexPriceX18 === null) continue;
+    const price = x18(ms.indexPriceX18);
     if (!(price > 0)) continue;
 
     const last = st.lastAccepted.get(m.name);

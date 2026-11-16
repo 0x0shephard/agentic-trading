@@ -11,7 +11,14 @@
 //      operational oracle updates and agent funding are logged quietly; every
 //      other call or transfer is alerted with a transaction link. Hashes already
 //      covered by a decoded event alert are not repeated.
-import { formatEther, formatUnits, parseAbiItem, toFunctionSelector } from "viem";
+//
+// RPC budget: layer 1 is a single eth_getLogs per pass (all watched contracts
+// and all admin event topics in one filter; logs are then matched back to their
+// (contract, event) definition, so a topic emitted by a contract it was not
+// listed for is ignored exactly as before). Layer 2 first compares each admin
+// key's nonce with the previous pass and downloads full blocks only when a key
+// actually sent a transaction, stopping once every new nonce is accounted for.
+import { decodeEventLog, formatEther, formatUnits, hexToBigInt, hexToNumber, parseAbiItem, toEventSelector, toFunctionSelector } from "viem";
 import type { Address, Hex, PublicClient } from "viem";
 import { CONTRACTS } from "../../config/addresses";
 import { logger } from "../../logging/logger";
@@ -173,10 +180,53 @@ export const ADMIN_EVENTS: AdminEventDef[] = [
 export interface AdminWatchState {
   cursorBlock: bigint;
   seen: Set<string>; // txHash:logIndex, cross-pass dedup
+  /** Each admin key's nonce as of cursorBlock (lowercase address). Missing when unknown. */
+  nonces: Map<string, number>;
 }
 
 export function newAdminWatchState(fromBlock: bigint): AdminWatchState {
-  return { cursorBlock: fromBlock, seen: new Set() };
+  return { cursorBlock: fromBlock, seen: new Set(), nonces: new Map() };
+}
+
+interface DecodedAdminLog { def: AdminEventDef; transactionHash: Hex; logIndex: number; blockNumber: bigint; args: Record<string, unknown> }
+
+/** (contract, topic0) -> definition. */
+function adminEventIndex(): Map<string, AdminEventDef> {
+  const m = new Map<string, AdminEventDef>();
+  for (const def of ADMIN_EVENTS) m.set(`${def.contract.toLowerCase()}|${toEventSelector(def.event as never).toLowerCase()}`, def);
+  return m;
+}
+
+/** All admin events in [from, to] with one eth_getLogs per MAX_LOG_RANGE chunk
+ *  (address array + topic0 OR-list), decoded and matched to their definition. */
+async function getAdminLogs(pc: PublicClient, from: bigint, to: bigint): Promise<DecodedAdminLog[]> {
+  const index = adminEventIndex();
+  const addresses = [...new Set(ADMIN_EVENTS.map((d) => d.contract.toLowerCase()))] as Address[];
+  const topics = [...new Set(ADMIN_EVENTS.map((d) => toEventSelector(d.event as never).toLowerCase()))] as Hex[];
+  const out: DecodedAdminLog[] = [];
+  for (let start = from; start <= to; start += MAX_LOG_RANGE) {
+    const end = start + MAX_LOG_RANGE - 1n > to ? to : start + MAX_LOG_RANGE - 1n;
+    const raw = (await pc.request({
+      method: "eth_getLogs",
+      params: [{ address: addresses, topics: [topics], fromBlock: `0x${start.toString(16)}`, toBlock: `0x${end.toString(16)}` }],
+    } as never)) as { address: Address; topics: Hex[]; data: Hex; transactionHash: Hex; logIndex: Hex; blockNumber: Hex; removed?: boolean }[];
+    for (const l of raw) {
+      if (l.removed) continue;
+      const def = index.get(`${l.address.toLowerCase()}|${(l.topics[0] ?? "").toLowerCase()}`);
+      if (!def) continue; // topic emitted by a contract it is not watched on
+      // Same decoding as viem's (non-strict) getLogs({ event }): strict first,
+      // then lenient, then the log with empty args.
+      let args: Record<string, unknown> = {};
+      for (const strict of [true, false]) {
+        try {
+          args = (decodeEventLog({ abi: [def.event] as never, data: l.data, topics: l.topics as never, strict }) as unknown as { args: Record<string, unknown> }).args ?? {};
+          break;
+        } catch { /* try next mode */ }
+      }
+      out.push({ def, transactionHash: l.transactionHash, logIndex: hexToNumber(l.logIndex), blockNumber: hexToBigInt(l.blockNumber), args });
+    }
+  }
+  return out;
 }
 
 /** One admin-watch pass: decode admin events, then catch any other admin tx.
@@ -197,15 +247,19 @@ export async function adminWatchPass(
   const coveredTx = new Set<string>();
 
   // ── Layer 1: decoded admin events ──
+  let logs: DecodedAdminLog[];
+  try {
+    logs = await getAdminLogs(pc, fromBlock, head);
+  } catch (e) {
+    // Leave the cursor where it is so the same window is retried next pass
+    // (dedup by txHash:logIndex makes the retry safe).
+    logger.warn({ from: Number(fromBlock), to: Number(head), err: e instanceof Error ? e.message.split("\n")[0] : String(e) }, "adminwatch: getLogs failed");
+    return out;
+  }
+  // Emit in the same order as before: by definition, then by log order.
   for (const def of ADMIN_EVENTS) {
-    let logs;
-    try {
-      logs = await getLogsChunked(pc, def.contract, def.event, fromBlock, head);
-    } catch (e) {
-      logger.warn({ contract: def.label, title: def.title, err: e instanceof Error ? e.message.split("\n")[0] : String(e) }, "adminwatch: getLogs failed");
-      continue;
-    }
     for (const l of logs) {
+      if (l.def !== def) continue;
       const key = `${l.transactionHash}:${l.logIndex}`;
       if (st.seen.has(key)) continue;
       st.seen.add(key);
@@ -221,13 +275,35 @@ export async function adminWatchPass(
   }
 
   // ── Layer 2: catch-all for any admin-key transaction ──
-  // Scan the window's blocks for transactions sent from an admin address. The
-  // window is small (a poll's worth of blocks), so this is cheap.
+  // Compare each admin key's nonce at head with the nonce at the cursor. Blocks
+  // are downloaded only when some key sent a transaction in the window, and the
+  // scan stops as soon as every new nonce has been matched to a transaction.
   const admins = new Set(adminAddresses().map((a) => a.toLowerCase()));
-  if (admins.size > 0 && head - fromBlock > MAX_TX_SCAN) {
+  const headNonces = new Map<string, number>();
+  let expected = 0; // admin txs known to be in the window (when all nonces are known)
+  let nonceKnown = admins.size > 0;
+  for (const a of admins) {
+    try {
+      const prev = st.nonces.get(a)
+        ?? await pc.getTransactionCount({ address: a as Address, blockNumber: st.cursorBlock });
+      const now = await pc.getTransactionCount({ address: a as Address, blockNumber: head });
+      headNonces.set(a, now);
+      expected += Math.max(now - prev, 0);
+    } catch (e) {
+      nonceKnown = false; // fall back to scanning the whole window
+      logger.debug({ admin: a, err: e instanceof Error ? e.message.split("\n")[0] : String(e) }, "adminwatch: nonce read failed; scanning window");
+    }
+  }
+  st.nonces = headNonces;
+
+  if (admins.size > 0 && nonceKnown && expected === 0) {
+    // No admin key sent anything in the window: nothing to scan.
+  } else if (admins.size > 0 && head - fromBlock > MAX_TX_SCAN) {
     logger.warn({ from: Number(fromBlock), to: Number(head) }, "adminwatch: window too large for tx catch-all scan; event watch still ran");
   } else if (admins.size > 0) {
+    let found = 0;
     for (let b = fromBlock; b <= head; b++) {
+      if (nonceKnown && found >= expected) break; // every new nonce accounted for
       let block;
       try {
         block = await pc.getBlock({ blockNumber: b, includeTransactions: true });
@@ -235,6 +311,7 @@ export async function adminWatchPass(
       for (const tx of block.transactions as unknown as AdminTransaction[]) {
         if (typeof tx === "string") continue;
         if (!admins.has(tx.from.toLowerCase())) continue;
+        found++;
         const h = tx.hash.toLowerCase();
         if (coveredTx.has(h)) continue; // already alerted with decoded detail
         if (st.seen.has(`tx:${h}`)) continue;

@@ -22,7 +22,8 @@
 // once we deploy there") is handled by the existing Section 3 outage guard, which
 // activates when the uptime feed address is set at launch; it is not duplicated
 // here.
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
+import { countedHttp } from "../../chain/clients";
 import { sepolia } from "viem/chains";
 import type { PublicClient } from "viem";
 import { env } from "../../config/env";
@@ -69,18 +70,18 @@ export function netConfigFromEnv(): NetConfig {
 }
 
 /** Bounded client: one attempt, tight timeout, no block-number caching. */
-function makeClient(url: string): PublicClient {
+function makeClient(url: string, label: string): PublicClient {
   return createPublicClient({
     chain: sepolia,
-    transport: http(url, { timeout: 8_000, retryCount: 0 }),
+    transport: countedHttp(url, label, { timeout: 8_000, retryCount: 0 }),
     cacheTime: 0,
   });
 }
 
 export function createNetClients(): NetClients {
-  const primary: NetClient = { ep: { label: "primary", url: env.SEPOLIA_RPC_URL }, client: makeClient(env.SEPOLIA_RPC_URL) };
+  const primary: NetClient = { ep: { label: "primary", url: env.SEPOLIA_RPC_URL }, client: makeClient(env.SEPOLIA_RPC_URL, "net-primary") };
   const fb = env.NET_FALLBACK_RPC_URL;
-  return { primary, fallback: fb ? { ep: { label: "fallback", url: fb }, client: makeClient(fb) } : undefined };
+  return { primary, fallback: fb ? { ep: { label: "fallback", url: fb }, client: makeClient(fb, "net-fallback") } : undefined };
 }
 
 async function headOrNull(nc: NetClient): Promise<bigint | null> {

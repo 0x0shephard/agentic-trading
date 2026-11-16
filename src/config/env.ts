@@ -26,7 +26,7 @@ const schema = z.object({
   // ── Surveillance monitor (separate Railway service; unused by the swarm) ──
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().trim().min(1).optional(),
-  MONITOR_POLL_MS: z.coerce.number().int().positive().default(45_000),
+  MONITOR_POLL_MS: z.coerce.number().int().positive().default(60_000),
   MONITOR_LOOKBACK_MIN: z.coerce.number().int().positive().default(120),
   MONITOR_LABEL_WALLETS: z.coerce.number().int().positive().default(24),
   // ── Alerting (Slack) ──────────────────────────────────────────────────────
@@ -37,12 +37,17 @@ const schema = z.object({
   /** Minimum seconds between repeat notifications for the same condition. */
   ALERT_COOLDOWN_SEC: z.coerce.number().int().positive().default(1_800),
   /** Health poll cadence (chain state). Independent of the trade-flow poll. */
-  HEALTH_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  HEALTH_POLL_MS: z.coerce.number().int().positive().default(300_000),
+  /** Refresh cadence for per-market values that rarely change (getMarket
+   *  addresses, adapter cuOracle/assetId/maxAge). Default 1h. */
+  STATIC_REFRESH_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Emit an RPC_STATS log line this often (ms). Default 10 min. */
+  RPC_STATS_INTERVAL_MS: z.coerce.number().int().positive().default(600_000),
   /** Admin-action watch cadence (on-chain admin events + admin-key txs). */
-  ADMIN_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  ADMIN_POLL_MS: z.coerce.number().int().positive().default(300_000),
   // ── Network / RPC health monitor ──────────────────────────────────────────
   /** Network-health poll cadence (primary RPC liveness, head advance, lag). */
-  NET_POLL_MS: z.coerce.number().int().positive().default(60_000),
+  NET_POLL_MS: z.coerce.number().int().positive().default(300_000),
   /** Optional second RPC endpoint to cross-check the primary (down vs lag). */
   NET_FALLBACK_RPC_URL: z.string().url().optional(),
   /** Warn if the chain head has not advanced for this long (ms). Default 3 min. */

@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 import { sepolia } from "viem/chains";
 import { env } from "../config/env";
 import { CONTRACTS } from "../config/addresses";
@@ -8,7 +8,10 @@ import { MARKETS } from "../config/markets";
 import type { MarketDef } from "../config/markets";
 import { getMarketSnapshot } from "../market/snapshot";
 import { toNumberX18 } from "../preview/orderPreview";
-import { agentAccount } from "../chain/clients";
+import { agentAccount, countedHttp } from "../chain/clients";
+import { logRpcStats as logStopStats, startRpcStatsLogger } from "../chain/rpcstats";
+import { readerFor } from "./alerting/chainsnapshot";
+import type { ChainReader } from "./alerting/chainsnapshot";
 import { buildAssignments } from "../orchestrator/assignments";
 import { buildLabels } from "../observability/labels";
 import { sleepUntil } from "../runtime/cadence";
@@ -116,6 +119,22 @@ export interface MonitorState {
   labels: Map<string, string>;
   cursorIso: string; // only process trades with block_timestamp > cursor
   lastExec: Map<string, number>; // running vAMM mark per market (last exec price)
+  /** Shared chain reader; when set, index prices come from the health pass's
+   *  snapshot instead of per-market reads. */
+  reader?: ChainReader;
+}
+
+/** Index price used to score trades: the latest health snapshot when it is fresh
+ *  (oracle price, falling back to mark like getMarketSnapshot does), otherwise a
+ *  direct per-market read as before. */
+async function indexPriceFor(def: MarketDef, st: MonitorState): Promise<number> {
+  if (st.reader) {
+    const snap = st.reader.latest(2 * env.HEALTH_POLL_MS) ?? (await st.reader.snapshot());
+    const ms = snap.markets.get(def.name);
+    const px = ms?.cfg ? (ms.indexPriceX18 ?? ms.markPriceX18) : null;
+    if (px !== null && px !== undefined) return toNumberX18(px);
+  }
+  return toNumberX18((await getMarketSnapshot(def)).indexPriceX18);
 }
 
 // Read a trade's fill price (the vAMM mark it executed at), or NaN if absent.
@@ -174,7 +193,7 @@ export async function monitorPass(sb: SupabaseClient, st: MonitorState): Promise
     if (!def) continue; // market we don't track
     let indexPrice = 0;
     try {
-      indexPrice = toNumberX18((await getMarketSnapshot(def)).indexPriceX18);
+      indexPrice = await indexPriceFor(def, st);
     } catch (e) {
       logger.warn({ market: mname, err: e instanceof Error ? e.message : String(e) }, "monitor: index read failed");
       continue;
@@ -277,7 +296,11 @@ export async function runMonitor(): Promise<void> {
     [...st.labels.keys()].filter((address) => address !== CONTRACTS.treasury.toLowerCase()),
   );
   const hm = createHealthMonitor();
-  const pc = createPublicClient({ chain: sepolia, transport: http(env.SEPOLIA_RPC_URL) });
+  const pc = createPublicClient({ chain: sepolia, transport: countedHttp(env.SEPOLIA_RPC_URL, "monitor") });
+  // Static per-market values cached here (refreshed every STATIC_REFRESH_MS);
+  // the health pass, price guard and trade-flow check share its snapshots.
+  st.reader = readerFor(pc, MARKETS, env.STATIC_REFRESH_MS);
+  const stopRpcStats = startRpcStatsLogger(env.RPC_STATS_INTERVAL_MS);
   const adminState = newAdminWatchState(await pc.getBlockNumber().catch(() => 0n));
   const priceGuard = newPriceGuardState();
   const netMonitor = createNetMonitor();
@@ -319,10 +342,13 @@ export async function runMonitor(): Promise<void> {
     // trade-flow pass threw: an indexer outage is exactly when it matters.
     if (Date.now() - lastHealth >= env.HEALTH_POLL_MS) {
       lastHealth = Date.now();
-      await healthPass(pc, hm).catch((e: unknown) =>
-        logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: health pass failed"));
-      // Bad-published-price circuit breaker shares the health cadence.
-      await priceGuardPass(pc, priceGuard)
+      const snap = await healthPass(pc, hm).catch((e: unknown) => {
+        logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: health pass failed");
+        return null;
+      });
+      // Bad-published-price circuit breaker shares the health cadence and the
+      // health pass's snapshot (no separate reads).
+      await priceGuardPass(pc, priceGuard, snap ? { snapshot: snap } : {})
         .then((alerts) => { if (alerts.length) logger.warn({ priceAlerts: alerts.length }, "monitor: suspected bad price"); })
         .catch((e: unknown) => logger.error({ err: e instanceof Error ? e.message : String(e) }, "monitor: price guard failed"));
     }
@@ -355,5 +381,7 @@ export async function runMonitor(): Promise<void> {
   }
   process.off("SIGINT", stop);
   process.off("SIGTERM", stop);
+  stopRpcStats();
+  logStopStats();
   logger.info("surveillance monitor stopped");
 }
